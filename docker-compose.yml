@@ -1,0 +1,21 @@
+# Runs the whole app on one machine (your PC or any server): one container,
+# the database in a Docker volume. Put the password in a .env file next to
+# this one (see .env.example), then:
+#   docker compose up -d --build
+services:
+  financas:
+    build: .
+    restart: unless-stopped
+    environment:
+      FINANCAS_SENHA: ${FINANCAS_SENHA:?Defina FINANCAS_SENHA no arquivo .env}
+    ports:
+      - "${PORTA:-8080}:8080"
+    volumes:
+      - financas_data:/data
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: '5m', max-file: '2' }
+
+volumes:
+  financas_data:

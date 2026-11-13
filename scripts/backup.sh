@@ -1,11 +1,11 @@
 #!/bin/sh
-# Daily copy of the database, kept for 14 days. Run from ~/financas on the server:
-#   0 4 * * * cd ~/financas && sh deploy/backup.sh >> backups/backup.log 2>&1
+# Daily copy of the database, kept for 14 days. Run from the project folder:
+#   0 4 * * * cd /caminho/do/projeto && sh scripts/backup.sh >> backups/backup.log 2>&1
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p backups
 DAY=$(date +%F)
-dc() { docker compose -f docker-compose.server.yml "$@"; }
+dc() { docker compose -f docker-compose.yml "$@"; }
 # VACUUM INTO writes a consistent copy even while the app is running.
 dc exec -T financas node --disable-warning=ExperimentalWarning -e "
   const { DatabaseSync } = require('node:sqlite');

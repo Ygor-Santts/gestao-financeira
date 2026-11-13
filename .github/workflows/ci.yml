@@ -1,0 +1,25 @@
+# Checks every push: syntax, tests and the Docker image. Nothing is deployed anywhere.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: for f in server/*.js server/importers/*.js public/js/*.js public/js/views/*.js public/sw.js; do node --check "$f"; done
+      - run: npm test
+      - name: Build and start the Docker image
+        run: |
+          echo "FINANCAS_SENHA=ci" > .env
+          docker compose up -d --build
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8080/ | grep -q '<title>Finanças</title>'
+          docker compose exec -T financas pdftotext -v
+          docker compose logs

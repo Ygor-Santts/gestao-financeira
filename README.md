@@ -36,62 +36,62 @@ public/           o app (HTML, CSS, JS, service worker, ícones)
 test/             testes com dados inventados
 ```
 
-Rodar no computador:
+O banco fica em `data/financas.db` (ou em `DB_FILE`). Extratos, backups, o banco e o `.env` estão no `.gitignore`: **nenhum dado financeiro vai para o repositório**.
+
+## Rodar no seu computador
+
+O app roda inteiro numa máquina sua: um processo (ou um container) e um arquivo de banco. Ele não depende de nenhum outro sistema.
+
+### Com Docker (recomendado para deixar ligado)
 
 ```bash
-FINANCAS_SENHA=uma-senha npm run dev   # http://localhost:8080
+cp .env.example .env        # e troque a senha
+docker compose up -d --build
+```
+
+Abra `http://localhost:8080`. O container volta sozinho quando o PC reinicia (`restart: unless-stopped`) e o banco fica no volume `financas_data`.
+
+```bash
+docker compose logs -f      # ver o log
+docker compose restart      # reiniciar
+docker compose down         # parar (os dados ficam no volume)
+git pull && docker compose up -d --build   # atualizar
+```
+
+### Sem Docker
+
+Precisa do Node 22.13 ou mais novo e, para ler faturas em PDF, do `pdftotext` (pacote `poppler-utils` no Linux, `brew install poppler` no Mac).
+
+```bash
+FINANCAS_SENHA=uma-senha npm start     # http://localhost:8080
+npm run dev                            # recarrega ao salvar
 npm test
 ```
 
-O banco fica em `data/financas.db` (ou em `DB_FILE`). Extratos, backups e o banco estão no `.gitignore`: **nenhum dado financeiro vai para o repositório**.
+## Usar no celular
 
-## Servidor (junto do Trampo Fácil)
+- **Na mesma rede Wi-Fi:** abra `http://IP-DO-PC:8080` no navegador do celular (o IP aparece com `ip addr` no Linux ou `ipconfig` no Windows). Já dá para usar tudo.
+- **Para instalar como app e usar fora de casa:** o celular só instala o PWA (ícone na tela inicial, abrir offline, compartilhar extrato direto do app do banco) num endereço **HTTPS**. O jeito mais simples é o [Tailscale](https://tailscale.com), de graça para uso pessoal:
+  1. instale o Tailscale no PC e no celular, com a mesma conta;
+  2. no PC: `tailscale serve --bg 8080`;
+  3. ele mostra um endereço `https://NOME-DO-PC.SEU-TAILNET.ts.net`, que só os seus aparelhos acessam. Abra-o no celular e use **Adicionar à tela inicial**.
 
-O app roda no mesmo servidor do Trampo Fácil, sem mexer nele:
+  Assim nenhuma porta fica aberta para a internet.
 
-- container próprio (`~/financas`), com limite de 192 MB de memória e meia CPU;
-- banco próprio (um arquivo SQLite num volume do Docker), sem usar o MySQL do Trampo Fácil;
-- entra apenas na rede Docker `tpf-api_default`, para o Caddy do tpf-api responder `https://financas.SEU_DOMINIO` e repassar para ele.
+## Primeiro uso
 
-### Primeira vez
+Entre com a senha, vá em **Mais › Backup › Restaurar** e escolha o arquivo de dados inicial (exportado da planilha). Depois é só importar os extratos novos em **Importar**.
 
-1. **DNS**: crie um registro **A** com o nome `financas` apontando para o IP do servidor (igual aos de `api` e `admin`).
-2. **Segredos do repositório** (Settings › Secrets and variables › Actions):
-   - `SERVER_HOST`, `SERVER_USER`, `SERVER_SSH_KEY`: os mesmos do tpf-api;
-   - `FINANCAS_SENHA`: a senha para entrar no app (longa; um gerenciador de senhas ajuda).
-3. **Caddy**: no tpf-api, o `Caddyfile` precisa do bloco abaixo. O deploy do tpf-api reinicia só o Caddy quando apenas o Caddyfile muda.
-
-   ```
-   financas.{$DOMAIN} {
-   	encode gzip
-   	reverse_proxy financas:8080
-   }
-   ```
-
-4. Faça um push na `main` (ou rode o workflow **Deploy** à mão). O GitHub testa o código, copia para `~/financas` no servidor, grava a senha em `~/financas/.env` e sobe o container.
-5. Abra `https://financas.SEU_DOMINIO` no celular, entre com a senha e use **Adicionar à tela inicial**. Em **Mais › Backup › Restaurar**, carregue o arquivo de dados inicial.
-
-### Atualizações
-
-Cada push na `main` publica sozinho. Se os testes falharem, nada é publicado. Para trocar a senha, mude o segredo `FINANCAS_SENHA` e rode o workflow de novo.
-
-### Backup
+## Backup
 
 - No app: **Mais › Backup › Baixar backup** gera um JSON com tudo.
-- No servidor, uma cópia diária do banco (guardada por 14 dias):
+- No PC (com Docker), uma cópia diária do banco guardada por 14 dias, via cron:
 
   ```
-  0 4 * * * cd ~/financas && sh deploy/backup.sh >> backups/backup.log 2>&1
+  0 4 * * * cd /caminho/do/projeto && sh scripts/backup.sh >> backups/backup.log 2>&1
   ```
 
-### Comandos úteis no servidor
-
-```bash
-cd ~/financas
-docker compose -f docker-compose.server.yml logs -f financas   # ver o log
-docker compose -f docker-compose.server.yml restart financas    # reiniciar só este app
-docker compose -f docker-compose.server.yml down                # parar só este app (o volume fica)
-```
+O GitHub Actions só testa o código e a imagem Docker a cada push. Ele não publica nada em servidor nenhum.
 
 ## Segurança
 

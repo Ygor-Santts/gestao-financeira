@@ -4,4 +4,4 @@ node_modules
 data
 test
 *.md
-deploy
+scripts
