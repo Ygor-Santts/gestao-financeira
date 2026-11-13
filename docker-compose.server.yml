@@ -1,0 +1,26 @@
+# Runs on the Trampo Fácil server without touching it: its own container and its own
+# database file. It only joins tpf-api's Docker network so tpf-api's Caddy can answer
+# https://financas.DOMAIN and pass the requests here.
+#   docker compose -f docker-compose.server.yml up -d --build
+services:
+  financas:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - financas_data:/data
+    # Hard limits so this app can never take memory or CPU from Trampo Fácil.
+    mem_limit: 192m
+    cpus: 0.5
+    networks: [tpf]
+    logging:
+      driver: json-file
+      options: { max-size: '5m', max-file: '2' }
+
+networks:
+  tpf:
+    name: tpf-api_default
+    external: true
+
+volumes:
+  financas_data:

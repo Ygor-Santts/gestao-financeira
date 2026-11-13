@@ -1,0 +1,64 @@
+# Every push to main is tested here and, if it passes, published on the server.
+# Needs the repository secrets SERVER_HOST, SERVER_USER and SERVER_SSH_KEY (the same
+# ones used by Trampo Fácil) and FINANCAS_SENHA (the password to enter the app).
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-financas
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: for f in server/*.js server/importers/*.js public/js/*.js public/js/views/*.js public/sw.js; do node --check "$f"; done
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish on the server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          FINANCAS_SENHA: ${{ secrets.FINANCAS_SENHA }}
+        run: |
+          if [ -z "$SERVER_HOST" ] || [ -z "$FINANCAS_SENHA" ]; then
+            echo "::notice::Secrets not set yet (SERVER_HOST and FINANCAS_SENHA), skipping the deploy."
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          echo "$SERVER_SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          SSH="ssh -i $HOME/.ssh/deploy -o StrictHostKeyChecking=accept-new $SERVER_USER@$SERVER_HOST"
+          # Refuse to run if Trampo Fácil's network is not there: this app only joins it.
+          $SSH 'docker network inspect tpf-api_default >/dev/null'
+          # Copy the code (works with a private repository, no key on the server).
+          tar czf - Dockerfile docker-compose.server.yml package.json server public deploy \
+            | $SSH 'mkdir -p ~/financas && tar xzf - -C ~/financas'
+          # The password goes through stdin, never through the command line or the log.
+          printf 'FINANCAS_SENHA=%s\n' "$FINANCAS_SENHA" \
+            | $SSH 'umask 077 && cat > ~/financas/.env'
+          $SSH '
+            set -e
+            cd ~/financas
+            docker compose -f docker-compose.server.yml up -d --build
+            docker image prune -f
+            for i in $(seq 1 20); do
+              docker compose -f docker-compose.server.yml exec -T financas wget -qO- http://127.0.0.1:8080/api/health && exit 0
+              sleep 2
+            done
+            echo "The app did not answer its health check"; docker compose -f docker-compose.server.yml logs --tail 50 financas; exit 1
+          '

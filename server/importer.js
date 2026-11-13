@@ -1,0 +1,141 @@
+// Statement import: read the file, suggest type/category, flag lines already in the
+// database, then save what the person confirmed.
+import { decodeText, looksLikeOfx, parseOfx, bankFromOfx } from './importers/ofx.js';
+import { parseCsv } from './importers/csv.js';
+import { pdfToText, parsePdfText } from './importers/pdf.js';
+import { buildHistory, classifyAccountLine, classifyCardLine } from './importers/classify.js';
+import { getSetting, setSetting, tx } from './db.js';
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+async function readFile(buf, filename) {
+  const name = (filename || '').toLowerCase();
+  const head = buf.subarray(0, 5).toString('latin1');
+  if (name.endsWith('.pdf') || head === '%PDF-') {
+    return parsePdfText(await pdfToText(buf));
+  }
+  const text = decodeText(buf);
+  if (name.endsWith('.ofx') || looksLikeOfx(text)) {
+    const o = parseOfx(text);
+    return { ...o, bank: bankFromOfx(o) };
+  }
+  if (name.endsWith('.csv') || text.includes(',') || text.includes(';')) return parseCsv(text);
+  throw new Error('Formato não reconhecido. Envie OFX, CSV ou PDF.');
+}
+
+function invoiceGuess(parsed, filename) {
+  if (parsed.invoice) return parsed.invoice;
+  const f = (filename || '').match(/(20\d{2})-(\d{2})-\d{2}/);
+  if (f) return `${f[1]}-${f[2]}`;
+  if (parsed.end) return parsed.end.slice(0, 7);
+  const last = parsed.items.map((i) => i.date).sort().pop();
+  if (!last) return null;
+  const [y, m] = last.split('-').map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+}
+
+export async function preview(db, buf, filename) {
+  const parsed = await readFile(buf, filename);
+  const acctMap = getSetting(db, 'acct_map', {});
+  let account = parsed.bank || null;
+  if (parsed.acctId && acctMap[parsed.acctId]) account = acctMap[parsed.acctId];
+  if (!parsed.isCard && /nu.?empresas|^nu_pj/i.test(filename || '')) account = 'Nu Empresas';
+  const kind = parsed.isCard ? 'card' : 'account';
+  const owners = getSetting(db, 'owner_names', []);
+  const company = getSetting(db, 'company_names', []);
+
+  let items;
+  if (kind === 'account') {
+    const history = buildHistory(db.prepare("SELECT description, type, category FROM transactions WHERE date >= date('now','-400 days')").all());
+    items = parsed.items.map((i) => ({ ...i, amount: round2(i.amount), ...classifyAccountLine(i, { account, owners, company, history }) }));
+  } else {
+    const history = buildHistory(db.prepare("SELECT description, NULL AS type, category FROM card_items WHERE date >= date('now','-400 days')").all());
+    // On card OFX/CSV a purchase is a debit; store purchases as positive values.
+    const flip = parsed.format === 'ofx';
+    items = parsed.items
+      .map((i) => ({ ...i, amount: round2(flip ? -i.amount : i.amount) }))
+      .filter((i) => !/pagamento recebido|pagamento de fatura|pagamento em/i.test(i.description))
+      .map((i) => ({ ...i, ...classifyCardLine(i, { history }) }));
+  }
+  markDuplicates(db, kind, account, items);
+  return {
+    filename, kind, format: parsed.format, account, acctId: parsed.acctId || null,
+    invoice: kind === 'card' ? invoiceGuess(parsed, filename) : null,
+    balance: parsed.balance || null,
+    period: { start: parsed.start || items.map((i) => i.date).sort()[0] || null, end: parsed.end || items.map((i) => i.date).sort().pop() || null },
+    items,
+  };
+}
+
+export function markDuplicates(db, kind, account, items) {
+  const table = kind === 'card' ? 'card_items' : 'transactions';
+  const col = kind === 'card' ? 'card' : 'account';
+  if (!account) { items.forEach((i) => { i.duplicate = false; }); return; }
+  const dates = items.map((i) => i.date).sort();
+  if (!dates.length) return;
+  const existing = db.prepare(`SELECT id, date, amount, ext_id FROM ${table} WHERE ${col} = ? AND date BETWEEN date(?, '-3 days') AND date(?, '+3 days')`)
+    .all(account, dates[0], dates[dates.length - 1]);
+  const byExt = new Set(existing.filter((e) => e.ext_id).map((e) => e.ext_id));
+  const used = new Set();
+  for (const i of items) {
+    if (i.extId && byExt.has(i.extId)) { i.duplicate = true; continue; }
+    // Same account, same value, same day (±1 for card lines): very likely already there
+    const hit = existing.find((e) => !used.has(e.id) && Math.abs(e.amount - i.amount) < 0.005 &&
+      Math.abs(Date.parse(e.date) - Date.parse(i.date)) <= (kind === 'card' ? 86400000 : 0));
+    if (hit) { used.add(hit.id); i.duplicate = true; } else i.duplicate = false;
+  }
+}
+
+export function commit(db, body) {
+  const { kind, account, acctId, invoice, filename, format, balance } = body;
+  const items = (body.items || []).filter((i) => i.include !== false);
+  if (!account) throw new Error(kind === 'card' ? 'Escolha o cartão.' : 'Escolha a conta.');
+  if (kind === 'card' && !/^\d{4}-\d{2}$/.test(invoice || '')) throw new Error('Escolha o mês da fatura.');
+  return tx(db, () => {
+    const imp = db.prepare('INSERT INTO imports (filename, source, kind, account, count) VALUES (?, ?, ?, ?, ?)')
+      .run(filename || null, format || null, kind, account, items.length);
+    const importId = Number(imp.lastInsertRowid);
+    let added = 0, skipped = 0;
+    if (kind === 'card') {
+      const ins = db.prepare('INSERT OR IGNORE INTO card_items (card, invoice, date, description, amount, category, ext_id, import_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const i of items) {
+        const r = ins.run(account, invoice, i.date, i.description, round2(+i.amount), i.category || 'A confirmar', i.extId || null, importId);
+        r.changes ? added++ : skipped++;
+      }
+    } else {
+      const ins = db.prepare('INSERT OR IGNORE INTO transactions (date, description, amount, type, category, account, ext_id, import_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      for (const i of items) {
+        const r = ins.run(i.date, i.description, round2(+i.amount), i.type, i.category || 'A confirmar', account, i.extId || null, importId);
+        r.changes ? added++ : skipped++;
+      }
+      if (balance && balance.amount != null) updateBalance(db, account, balance.amount, balance.date);
+    }
+    if (acctId) {
+      const map = getSetting(db, 'acct_map', {});
+      map[acctId] = account;
+      setSetting(db, 'acct_map', map);
+    }
+    if (added) db.prepare('UPDATE imports SET count = ? WHERE id = ?').run(added, importId);
+    else db.prepare('DELETE FROM imports WHERE id = ?').run(importId); // nothing new: keep the history clean
+    return { importId, added, skipped };
+  });
+}
+
+export function updateBalance(db, account, amount, date) {
+  const row = db.prepare("SELECT id, updated FROM assets WHERE kind = 'Conta' AND account = ?").get(account);
+  if (!row) {
+    db.prepare("INSERT INTO assets (name, kind, account, value, updated) VALUES (?, 'Conta', ?, ?, ?)")
+      .run(`${account} – conta corrente`, account, amount, date);
+  } else if (!row.updated || !date || date >= row.updated) {
+    db.prepare('UPDATE assets SET value = ?, updated = ? WHERE id = ?').run(amount, date, row.id);
+  }
+}
+
+export function undoImport(db, id) {
+  return tx(db, () => {
+    const a = db.prepare('DELETE FROM transactions WHERE import_id = ?').run(id).changes;
+    const b = db.prepare('DELETE FROM card_items WHERE import_id = ?').run(id).changes;
+    db.prepare('DELETE FROM imports WHERE id = ?').run(id);
+    return { removed: a + b };
+  });
+}
