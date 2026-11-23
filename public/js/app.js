@@ -4,12 +4,12 @@ import { homeView } from './views/home.js';
 import { extratoView } from './views/extrato.js';
 import { importarView } from './views/importar.js';
 import { contasView } from './views/contas.js';
-import { maisView, metasView, patrimonioView, cartoesView, anoView, backupView, ajustesView } from './views/mais.js';
+import { maisView, metasView, patrimonioView, cartoesView, anoView, backupView, ajustesView, limitesView, irView } from './views/mais.js';
 
 const ROUTES = {
   '': [homeView, 'inicio'], extrato: [extratoView, 'extrato'], importar: [importarView, 'importar'], contas: [contasView, 'contas'],
   mais: [maisView, 'mais'], metas: [metasView, 'mais'], patrimonio: [patrimonioView, 'mais'], cartoes: [cartoesView, 'mais'],
-  ano: [anoView, 'mais'], backup: [backupView, 'mais'], ajustes: [ajustesView, 'mais'],
+  ano: [anoView, 'mais'], backup: [backupView, 'mais'], ajustes: [ajustesView, 'mais'], limites: [limitesView, 'mais'], ir: [irView, 'mais'],
 };
 
 const NAV = [

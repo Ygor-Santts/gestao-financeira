@@ -11,7 +11,7 @@ let pending = null; // preview kept while the person reviews it
 
 export async function importarView(root, state, go) {
   const m = await meta();
-  const [history, inbox] = await Promise.all([api.get('imports'), api.get('inbox')]);
+  const [history, inbox, goals] = await Promise.all([api.get('imports'), api.get('inbox'), api.get('goals')]);
 
   const input = h('input', { type: 'file', accept: '.ofx,.csv,.pdf,.txt,.bin,application/pdf,text/csv', class: 'sr-only', id: 'file' });
   const status = h('p', { class: 'muted', 'aria-live': 'polite' });
@@ -44,7 +44,7 @@ export async function importarView(root, state, go) {
       } catch (e) { toast(e.message, 'err'); }
     }
   }
-  if (pending) return reviewView(root, m, go);
+  if (pending) return reviewView(root, m, go, goals);
 
   fill(root, 
     h('header', { class: 'top plain' }, h('h1', {}, 'Importar extrato')),
@@ -72,7 +72,7 @@ export async function importarView(root, state, go) {
   );
 }
 
-function reviewView(root, m, go) {
+function reviewView(root, m, go, goals = []) {
   const p = pending;
   const isCard = p.kind === 'card';
   const owners = isCard ? m.cards : m.accounts;
@@ -103,6 +103,14 @@ function reviewView(root, m, go) {
     const cat = select(cats.includes(it.category) ? cats : [it.category, ...cats], it.category, { 'aria-label': 'Categoria', class: it.category === 'A confirmar' ? 'warn' : '' });
     cat.addEventListener('change', () => { it.category = cat.value; cat.classList.toggle('warn', cat.value === 'A confirmar'); });
     let typeSel = null;
+    // Caixinha for applications and withdrawals: its balance moves when you import.
+    const goalBox = h('span', { class: 'goal-sel' });
+    const renderGoal = () => {
+      if (isCard || it.type !== 'investimento' || !goals.length || it.category === 'Cripto') { goalBox.replaceChildren(); it.goalId = null; return; }
+      const gs = select([['', 'Sem caixinha'], ...goals.map((g) => [String(g.id), g.name])], it.goalId ? String(it.goalId) : '', { 'aria-label': 'Caixinha', class: 'type-sel have' });
+      gs.addEventListener('change', () => { it.goalId = gs.value ? Number(gs.value) : null; });
+      goalBox.replaceChildren(gs);
+    };
     if (!isCard) {
       const opts = Object.entries(TYPE).filter(([k]) => !(k === 'entrada' && it.amount < 0) && !(k === 'saida' && it.amount > 0)).map(([k, v]) => [k, v.label]);
       typeSel = select(opts, it.type, { 'aria-label': 'Tipo', class: `type-sel ${TYPE[it.type].cls}` });
@@ -112,14 +120,17 @@ function reviewView(root, m, go) {
         const list = catList(it.type);
         if (!list.includes(it.category)) it.category = list[0];
         cat.replaceChildren(...list.map((c) => h('option', { value: c, selected: c === it.category }, c)));
+        if (it.type === 'investimento' && !it.goalId && goals[0]) it.goalId = goals[0].id;
+        renderGoal();
       });
     }
+    renderGoal();
     const li = h('li', { class: `rev ${it.include ? '' : 'off'}` },
       h('label', { class: 'rev-check' }, cb),
       h('div', { class: 'rev-main' },
         h('div', { class: 'rev-top' }, h('span', { class: 'rev-desc' }, it.description), h('span', { class: `num ${isCard ? 'out' : TYPE[it.type].cls}` }, isCard ? money(it.amount) : signed(it.amount))),
         h('div', { class: 'rev-meta' }, h('span', {}, shortDate(it.date)), it.duplicate ? h('span', { class: 'dup' }, 'Já lançado') : null),
-        h('div', { class: 'rev-sel' }, typeSel, cat)));
+        h('div', { class: 'rev-sel' }, typeSel, cat, goalBox)));
     return li;
   };
 
@@ -129,7 +140,8 @@ function reviewView(root, m, go) {
     try {
       const r = await api.post('import/commit', p);
       pending = null;
-      toast(`${r.added} ${r.added === 1 ? 'lançamento importado' : 'lançamentos importados'}${r.skipped ? `, ${r.skipped} já existiam` : ''}`, 'ok');
+      const paid = r.paidBills?.length ? `. ${r.paidBills.length === 1 ? `Conta "${r.paidBills[0].description}" marcada como paga` : `${r.paidBills.length} contas marcadas como pagas`}` : '';
+      toast(`${r.added} ${r.added === 1 ? 'lançamento importado' : 'lançamentos importados'}${r.skipped ? `, ${r.skipped} já existiam` : ''}${paid}`, 'ok');
       location.hash = isCard ? `#/cartoes?invoice=${p.invoice}&card=${encodeURIComponent(p.account)}` : '#/extrato';
     } catch (e) { toast(e.message, 'err'); commitBtn.disabled = false; }
   });

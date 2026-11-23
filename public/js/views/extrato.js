@@ -23,6 +23,16 @@ export async function editTransaction(t, onSaved) {
   const account = select(m.accounts, t?.account || 'Nubank');
   const note = h('textarea', { rows: 2, placeholder: 'Opcional' }, t?.note || '');
   const catBox = h('div');
+  const goalBox = h('div');
+  const goals = await api.get('goals');
+  let goalSel = null;
+  const renderGoal = () => {
+    goalSel = null;
+    if (type !== 'investimento' || !goals.length) { goalBox.replaceChildren(); return; }
+    const cur = t?.goal_id ?? (t ? '' : goals[0].id);
+    goalSel = select([['', 'Nenhuma'], ...goals.map((g) => [String(g.id), g.name])], cur === '' ? '' : String(cur));
+    goalBox.replaceChildren(field('Caixinha', goalSel, 'O saldo da caixinha muda junto com este lançamento.'));
+  };
   let cat;
   const renderCats = () => {
     const list = categoriesFor(m, type);
@@ -38,9 +48,11 @@ export async function editTransaction(t, onSaved) {
         type = k;
         seg.querySelectorAll('.seg').forEach((b) => b.setAttribute('aria-checked', String(b === e.currentTarget)));
         renderCats();
+        renderGoal();
       },
     }, v.label)));
   renderCats();
+  renderGoal();
 
   const save = async (e) => {
     e.preventDefault();
@@ -49,10 +61,11 @@ export async function editTransaction(t, onSaved) {
     v = Math.abs(v);
     // Money out is negative; caixinha/transfer keep the direction they had (or out for new ones).
     const sign = type === 'entrada' ? 1 : type === 'saida' ? -1 : (t ? Math.sign(t.amount) || -1 : -1);
-    const body = { type, amount: v * sign, description: desc.value, date: date.value, category: cat.value, account: account.value, note: note.value, applySimilar: similar.checked };
+    const body = { type, amount: v * sign, description: desc.value, date: date.value, category: cat.value, account: account.value, note: note.value, applySimilar: similar.checked, goalId: goalSel ? (goalSel.value ? Number(goalSel.value) : null) : null };
     try {
-      if (t) await api.put(`transactions/${t.id}`, body); else await api.post('transactions', body);
-      toast(t ? 'Lançamento salvo' : 'Lançamento adicionado', 'ok');
+      const r = t ? await api.put(`transactions/${t.id}`, body) : await api.post('transactions', body);
+      const paid = r.paidBills?.length ? `. Conta "${r.paidBills[0].description}" marcada como paga` : '';
+      toast((t ? 'Lançamento salvo' : 'Lançamento adicionado') + paid, 'ok');
       s.close();
       onSaved();
     } catch (err) { toast(err.message, 'err'); }
@@ -75,6 +88,7 @@ export async function editTransaction(t, onSaved) {
     field('Descrição', desc),
     h('div', { class: 'grid2' }, field('Data', date), field('Conta', account)),
     catBox,
+    goalBox,
     t ? h('label', { class: 'check-line' }, similar, 'Usar esta categoria nos outros iguais que estão sem categoria') : null,
     field('Observação', note),
     h('div', { class: 'row-btns' },

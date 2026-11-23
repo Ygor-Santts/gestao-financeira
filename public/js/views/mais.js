@@ -13,6 +13,8 @@ export async function maisView(root) {
     ['#/patrimonio', 'Patrimônio', 'Contas, caixinhas, bens e dívidas'],
     ['#/cartoes', 'Faturas dos cartões', 'Em que você gastou em cada fatura'],
     ['#/ano', 'Mês a mês', 'Entrou, gastou e caixinhas em cada mês'],
+    ['#/limites', 'Limites por categoria', 'Quanto pode gastar por mês em cada categoria'],
+    ['#/ir', 'Imposto de Renda', 'Rendimentos, saúde, educação, bens e dívidas do ano'],
     ['#/backup', 'Backup', 'Baixar ou restaurar todos os dados'],
     ['#/ajustes', 'Ajustes', 'Seus nomes, para reconhecer transferências entre suas contas'],
   ];
@@ -158,7 +160,8 @@ export async function cartoesView(root, state, go) {
   const params = new URLSearchParams();
   if (q.get('invoice')) params.set('invoice', q.get('invoice'));
   if (q.get('card')) params.set('card', q.get('card'));
-  const d = await api.get(`cards?${params}`);
+  const [d, future] = await Promise.all([api.get(`cards?${params}`), api.get('cards/future')]);
+  const futureByMonth = [...new Set(future.map((f) => f.invoice))].map((inv) => ({ invoice: inv, cards: future.filter((f) => f.invoice === inv) }));
   const invoiceMonths = [...new Set(d.invoices.map((i) => i.invoice))];
   const ofInvoice = d.invoices.filter((i) => i.invoice === d.invoice);
   const set = (k, v) => { const n = new URLSearchParams(q); if (v) n.set(k, v); else n.delete(k); if (k === 'invoice') n.delete('card'); location.hash = `#/cartoes?${n}`; };
@@ -174,6 +177,12 @@ export async function cartoesView(root, state, go) {
       h('ul', { class: 'cats' }, d.categorias.map((c) => h('li', {}, h('div', { class: 'cat-row' },
         h('span', { class: 'cat-name' }, c.category), h('span', { class: 'num' }, money(c.total)),
         h('span', { class: 'cat-bar', style: { width: `${d.categorias[0].total > 0 ? Math.max(0, (c.total / d.categorias[0].total) * 100) : 0}%` } })))))) : null,
+    futureByMonth.length ? h('section', { class: 'block' },
+      h('h2', {}, 'Parcelas que ainda vão vir'),
+      h('p', { class: 'muted' }, 'Compras parceladas que já estão nas próximas faturas, antes de qualquer compra nova.'),
+      h('ul', { class: 'future' }, futureByMonth.slice(0, 8).map((fm) => h('li', {}, h('details', {},
+        h('summary', {}, h('span', {}, monthLabel(fm.invoice)), h('span', { class: 'num out' }, money(fm.cards.reduce((s, c) => s + c.total, 0)))),
+        h('ul', {}, fm.cards.flatMap((c) => c.items.map((i) => h('li', {}, h('span', {}, `${c.card}: ${i.description} (${i.parcela})`), h('span', { class: 'num' }, money(i.amount))))))))))) : null,
     d.items.length ? h('section', { class: 'block' }, h('div', { class: 'block-head' }, h('h2', {}, 'Compras'), h('span', { class: 'num muted' }, money(total))),
       h('ul', { class: 'plain-list' }, d.items.map((it) => h('li', {}, h('button', { onclick: () => editCardItem(it, () => go()) },
         h('span', {}, h('span', {}, it.description), h('small', { class: it.category === 'A confirmar' ? 'warn' : '' }, `${shortDate(it.date)}, ${it.category}${d.card ? '' : `, ${it.card}`}`)),
@@ -335,5 +344,83 @@ export async function ajustesView(root, state, go) {
     h('div', { class: 'row-btns' },
       s.pdf_passwords ? h('button', { type: 'button', class: 'btn ghost danger-text', onclick: async () => { await api.put('settings', { pdf_passwords_clear: true }); toast('Senhas apagadas', 'ok'); go(); } }, 'Apagar todas') : null,
       h('button', { class: 'btn primary', type: 'submit' }, 'Salvar senha'))),
+  );
+}
+
+// ---------- Limites ----------
+export async function limitesView(root, state, go) {
+  const month = state.month;
+  const [m, status, o] = await Promise.all([meta(), api.get(`budgets?month=${month}`), api.get(`overview?month=${month}`)]);
+  const spent = Object.fromEntries(o.categorias.map((c) => [c.category, c.total]));
+  const byCat = Object.fromEntries(status.map((b) => [b.category, b]));
+  const cats = m.categories.filter((c) => c.grp === 'gasto' && !['A confirmar', 'Cartões de crédito'].includes(c.name)).map((c) => c.name)
+    .sort((a, b) => (byCat[b] ? 1 : 0) - (byCat[a] ? 1 : 0) || (spent[b] || 0) - (spent[a] || 0));
+  const row = (cat) => {
+    const b = byCat[cat];
+    const used = b ? b.used : spent[cat] || 0;
+    const input = h('input', { inputmode: 'decimal', placeholder: 'Sem limite', value: b ? moneyInputValue(b.monthly) : '', 'aria-label': `Limite de ${cat}` });
+    input.addEventListener('change', async () => {
+      const v = parseMoneyInput(input.value) || 0;
+      await api.put('budgets', { category: cat, monthly: v });
+      toast(v ? `Limite de ${cat}: ${money0(v)} por mês` : `Limite de ${cat} removido`, 'ok');
+      go();
+    });
+    return h('div', { class: 'limit-row' },
+      h('div', {}, h('strong', {}, cat), h('small', {}, b ? `${money(used)} usados (${Math.round(b.pct * 100)}%)` : `${money(used)} neste mês`)),
+      input,
+      b ? h('div', { class: `meter ${b.pct >= 1 ? 'over' : 'lim'}`, 'aria-hidden': 'true' }, h('div', { style: { width: `${Math.min(100, b.pct * 100)}%` } })) : null);
+  };
+  fill(root,
+    back('Limites por categoria', '#/mais'),
+    h('p', { class: 'muted' }, `Uso em ${monthLabel(month).toLowerCase()}: o que saiu da conta mais as compras no cartão da fatura do mês. Você recebe um aviso no celular ao chegar em 80% e ao passar de 100%.`),
+    h('section', { class: 'block' }, cats.map(row)),
+  );
+}
+
+// ---------- Imposto de Renda ----------
+function downloadCsv(name, rows) {
+  const esc = (v) => (/[;"\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const csv = '\ufeff' + rows.map((r) => r.map((v) => (typeof v === 'number' ? v.toFixed(2).replace('.', ',') : esc(v ?? ''))).join(';')).join('\r\n');
+  const a = h('a', { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: name });
+  document.body.append(a); a.click(); a.remove();
+}
+
+export async function irView(root, state) {
+  const y = state.query.get('ano') || String(+state.month.slice(0, 4));
+  const d = await api.get(`ir?year=${y}`);
+  const totalRend = d.rendimentos.reduce((s, r) => s + r.total, 0);
+  const lista = (dd) => dd.itens.length
+    ? h('ul', { class: 'plain-list' }, dd.itens.map((i) => h('li', {}, h('div', { class: 'plain-row' },
+      h('span', {}, h('span', {}, i.description), h('small', {}, `${shortDate(i.date)}, ${i.origem}`)), h('span', { class: 'num' }, money(i.amount))))))
+    : h('p', { class: 'muted' }, 'Nada lançado nesta categoria.');
+  const csv = () => downloadCsv(`imposto-de-renda-${y}.csv`, [
+    ['Resumo para o Imposto de Renda', `ano ${y}`], [],
+    ['Rendimentos', 'Total'], ...d.rendimentos.map((r) => [r.category, r.total]), [],
+    ['Rendimentos por mês', 'Categoria', 'Total'], ...d.porMes.map((r) => [r.month, r.category, r.total]), [],
+    ['Saúde: data', 'Descrição', 'Origem', 'Valor'], ...d.saude.itens.map((i) => [i.date, i.description, i.origem, i.amount]), ['Total', '', '', d.saude.total], [],
+    ['Educação: data', 'Descrição', 'Origem', 'Valor'], ...d.educacao.itens.map((i) => [i.date, i.description, i.origem, i.amount]), ['Total', '', '', d.educacao.total], [],
+    ['Bens e direitos', 'Valor atual'], ...d.bens.map((b) => [b.name, b.value]), [],
+    ['Dívidas', 'Saldo devedor'], ...d.dividas.map((b) => [b.name, b.value]),
+  ]);
+  fill(root,
+    back('Imposto de Renda', '#/mais'),
+    h('div', { class: 'month-switch' },
+      h('a', { class: 'icon-btn', href: `#/ir?ano=${+y - 1}`, 'aria-label': 'Ano anterior', html: ICON.left }),
+      h('span', { class: 'month-label' }, `Ano de ${y}`),
+      h('a', { class: 'icon-btn', href: `#/ir?ano=${+y + 1}`, 'aria-label': 'Próximo ano', html: ICON.right })),
+    h('p', { class: 'note-box' }, `Isto organiza o que está no app para a declaração de ${+y + 1}. Confira com os informes do banco, do empregador e da contabilidade: o que a empresa te pagou pode ser pró-labore ou lucro, e cada um entra num lugar diferente.`),
+    h('section', { class: 'block' },
+      h('h2', {}, 'Rendimentos'),
+      h('ul', { class: 'plain-list' }, d.rendimentos.map((r) => h('li', {}, h('div', { class: 'plain-row' }, h('span', {}, h('span', {}, r.category), h('small', {}, `${r.n} ${r.n === 1 ? 'entrada' : 'entradas'}`)), h('span', { class: 'num in' }, money(r.total)))))),
+      h('p', { class: 'ir-total' }, h('span', {}, 'Total recebido'), h('span', { class: 'num in' }, money(totalRend)))),
+    h('section', { class: 'block' }, h('div', { class: 'block-head' }, h('h2', {}, 'Saúde (dedutível)'), h('span', { class: 'num' }, money(d.saude.total))),
+      h('p', { class: 'field-hint' }, 'Guarde os recibos com CPF/CNPJ de quem atendeu. Farmácia só conta se for parte de internação.'), lista(d.saude)),
+    h('section', { class: 'block' }, h('div', { class: 'block-head' }, h('h2', {}, 'Educação (dedutível até o limite)'), h('span', { class: 'num' }, money(d.educacao.total))), lista(d.educacao)),
+    h('section', { class: 'block' }, h('h2', {}, 'Bens e direitos'),
+      h('ul', { class: 'plain-list' }, d.bens.map((b) => h('li', {}, h('div', { class: 'plain-row' }, h('span', {}, b.name), h('span', { class: 'num have' }, money(b.value)))))),
+      h('p', { class: 'field-hint' }, 'Valores de hoje. Na declaração vale o saldo em 31/12 e, para bens, o valor de compra.')),
+    d.dividas.length ? h('section', { class: 'block' }, h('h2', {}, 'Dívidas'),
+      h('ul', { class: 'plain-list' }, d.dividas.map((b) => h('li', {}, h('div', { class: 'plain-row' }, h('span', {}, b.name), h('span', { class: 'num out' }, money(b.value))))))) : null,
+    h('button', { class: 'btn primary wide', onclick: csv }, 'Baixar planilha (CSV)'),
   );
 }

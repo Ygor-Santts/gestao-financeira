@@ -89,7 +89,16 @@ export function openDb(file) {
   db.exec(SCHEMA);
   const ins = db.prepare('INSERT OR IGNORE INTO categories (name, grp, color) VALUES (?, ?, ?)');
   for (const c of DEFAULT_CATEGORIES) ins.run(...c);
+  migrate(db);
   return db;
+}
+
+// Columns and tables added after the first version.
+function migrate(db) {
+  const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+  if (!cols('bills').includes('tx_id')) db.exec('ALTER TABLE bills ADD COLUMN tx_id INTEGER');
+  if (!cols('transactions').includes('goal_id')) db.exec('ALTER TABLE transactions ADD COLUMN goal_id INTEGER');
+  db.exec('CREATE TABLE IF NOT EXISTS budgets (category TEXT PRIMARY KEY, monthly REAL NOT NULL)');
 }
 
 export function getSetting(db, key, fallback = null) {

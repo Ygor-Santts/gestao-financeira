@@ -5,6 +5,7 @@ import { parseCsv } from './importers/csv.js';
 import { pdfToText, parsePdfText } from './importers/pdf.js';
 import { buildHistory, classifyAccountLine, classifyCardLine } from './importers/classify.js';
 import { getSetting, setSetting, tx } from './db.js';
+import { matchBills, unlinkBills, applyGoal } from './features.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -57,6 +58,7 @@ export async function preview(db, buf, filename) {
       .filter((i) => !/pagamento recebido|pagamento de fatura|pagamento em/i.test(i.description))
       .map((i) => ({ ...i, ...classifyCardLine(i, { history }) }));
   }
+  if (kind === 'account') suggestGoals(db, items);
   markDuplicates(db, kind, account, items);
   return {
     filename, kind, format: parsed.format, account, acctId: parsed.acctId || null,
@@ -65,6 +67,21 @@ export async function preview(db, buf, filename) {
     period: { start: parsed.start || items.map((i) => i.date).sort()[0] || null, end: parsed.end || items.map((i) => i.date).sort().pop() || null },
     items,
   };
+}
+
+// Which caixinha an application/withdrawal belongs to: a caixinha named in the
+// description, else the one used last time for the same description, else the last used.
+function suggestGoals(db, items) {
+  const goals = db.prepare('SELECT id, name FROM goals ORDER BY sort, id').all();
+  if (!goals.length) return;
+  const lastAny = db.prepare('SELECT goal_id FROM transactions WHERE goal_id IS NOT NULL ORDER BY date DESC, id DESC LIMIT 1').get()?.goal_id;
+  const bySame = db.prepare('SELECT goal_id FROM transactions WHERE goal_id IS NOT NULL AND description = ? ORDER BY date DESC LIMIT 1');
+  const n = (x) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  for (const i of items) {
+    if (i.type !== 'investimento' || i.category === 'Cripto') continue;
+    const named = goals.find((g) => n(i.description).includes(n(g.name)));
+    i.goalId = named?.id ?? bySame.get(i.description)?.goal_id ?? lastAny ?? goals[0].id;
+  }
 }
 
 export function markDuplicates(db, kind, account, items) {
@@ -95,7 +112,8 @@ export function commit(db, body) {
     const imp = db.prepare('INSERT INTO imports (filename, source, kind, account, count) VALUES (?, ?, ?, ?, ?)')
       .run(filename || null, format || null, kind, account, items.length);
     const importId = Number(imp.lastInsertRowid);
-    let added = 0, skipped = 0;
+    let added = 0, skipped = 0, paidBills = [];
+    const newIds = [];
     if (kind === 'card') {
       const ins = db.prepare('INSERT OR IGNORE INTO card_items (card, invoice, date, description, amount, category, ext_id, import_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
       for (const i of items) {
@@ -103,11 +121,19 @@ export function commit(db, body) {
         r.changes ? added++ : skipped++;
       }
     } else {
-      const ins = db.prepare('INSERT OR IGNORE INTO transactions (date, description, amount, type, category, account, ext_id, import_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+      const ins = db.prepare('INSERT OR IGNORE INTO transactions (date, description, amount, type, category, account, ext_id, import_id, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+      const validGoal = new Set(db.prepare('SELECT id FROM goals').all().map((g) => g.id));
       for (const i of items) {
-        const r = ins.run(i.date, i.description, round2(+i.amount), i.type, i.category || 'A confirmar', account, i.extId || null, importId);
-        r.changes ? added++ : skipped++;
+        const goal = i.type === 'investimento' && validGoal.has(Number(i.goalId)) ? Number(i.goalId) : null;
+        const r = ins.run(i.date, i.description, round2(+i.amount), i.type, i.category || 'A confirmar', account, i.extId || null, importId, goal);
+        if (r.changes) {
+          added++;
+          const id = Number(r.lastInsertRowid);
+          newIds.push(id);
+          if (goal) applyGoal(db, { type: i.type, amount: round2(+i.amount), goal_id: goal });
+        } else skipped++;
       }
+      paidBills = matchBills(db, newIds);
       if (balance && balance.amount != null) updateBalance(db, account, balance.amount, balance.date);
     }
     if (acctId) {
@@ -117,7 +143,7 @@ export function commit(db, body) {
     }
     if (added) db.prepare('UPDATE imports SET count = ? WHERE id = ?').run(added, importId);
     else db.prepare('DELETE FROM imports WHERE id = ?').run(importId); // nothing new: keep the history clean
-    return { importId, added, skipped };
+    return { importId, added, skipped, paidBills };
   });
 }
 
@@ -133,6 +159,9 @@ export function updateBalance(db, account, amount, date) {
 
 export function undoImport(db, id) {
   return tx(db, () => {
+    const rows = db.prepare('SELECT * FROM transactions WHERE import_id = ?').all(id);
+    for (const t of rows) applyGoal(db, t, -1);
+    unlinkBills(db, rows.map((t) => t.id));
     const a = db.prepare('DELETE FROM transactions WHERE import_id = ?').run(id).changes;
     const b = db.prepare('DELETE FROM card_items WHERE import_id = ?').run(id).changes;
     db.prepare('DELETE FROM imports WHERE id = ?').run(id);

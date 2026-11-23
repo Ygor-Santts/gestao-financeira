@@ -101,13 +101,17 @@ export async function homeView(root, state, go) {
       })) : null,
 
     o.categorias.length ? h('section', { class: 'block' },
-      h('h2', {}, 'Para onde foi o dinheiro'),
-      h('ul', { class: 'cats' }, o.categorias.slice(0, 7).map((c) => h('li', {},
-        h('a', { href: `#/extrato?cat=${encodeURIComponent(c.category)}` },
+      h('div', { class: 'block-head' }, h('h2', {}, 'Para onde foi o dinheiro'), h('a', { href: '#/limites' }, o.limites.length ? 'Limites' : 'Criar limites')),
+      h('ul', { class: 'cats' }, o.categorias.slice(0, 7).map((c) => {
+        const lim = o.limites.find((l) => l.category === c.category);
+        // With a limit the bar shows how much of it was used; without, the size next to the biggest category.
+        const width = lim ? Math.min(100, lim.pct * 100) : (c.total / o.categorias[0].total) * 100;
+        return h('li', {}, h('a', { href: `#/extrato?cat=${encodeURIComponent(c.category)}` },
           h('span', { class: 'cat-dot', style: { background: c.color } }),
-          h('span', { class: 'cat-name' }, c.category),
+          h('span', { class: 'cat-name' }, c.category, lim ? h('small', { class: lim.pct >= 1 ? 'over' : lim.pct >= 0.8 ? 'near' : '' }, `${money0(lim.used)} de ${money0(lim.monthly)} do limite, contando o cartão`) : null),
           h('span', { class: 'num' }, money(c.total)),
-          h('span', { class: 'cat-bar', style: { width: `${(c.total / o.categorias[0].total) * 100}%`, background: c.color } })))))) : null,
+          h('span', { class: `cat-bar ${lim ? (lim.pct >= 1 ? 'over' : 'lim') : ''}`, style: { width: `${width}%`, background: lim ? null : c.color } })));
+      }))) : null,
 
     h('section', { class: 'block' },
       h('div', { class: 'block-head' }, h('h2', {}, `Ano de ${y.year}`), h('a', { href: '#/ano' }, 'Mês a mês')),

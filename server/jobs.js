@@ -4,6 +4,7 @@ import { getSetting, setSetting } from './db.js';
 import { now, addDays, prevMonth } from './clock.js';
 import { makeBackup } from './backup.js';
 import { checkMail, mailConfigured } from './mail/index.js';
+import { createMonth, budgetStatus } from './features.js';
 
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 const MONTHS = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -79,6 +80,24 @@ export function startJobs(db, push, { intervalMs = 60_000 } = {}) {
       if (t.hour >= 9 && once('job_reminder', t.date)) {
         const msg = billReminder(db, t.date);
         if (msg) await push.notify(msg);
+      }
+      // New month: create its bills from last month (from 00:05 on day 1).
+      if (once('job_newmonth', t.month)) {
+        try {
+          const r = createMonth(db, prevMonth(t.month), t.month);
+          if (r.bills) console.log(`Contas de ${t.month} criadas: ${r.bills}`);
+        } catch (e) { console.error('Criar contas do mês falhou:', e.message); setSetting(db, 'job_newmonth', null); }
+      }
+      // Category limits: one notice at 80% and one at 100%, per category and month.
+      if (t.hour >= 8 && t.hour < 22) {
+        for (const b of budgetStatus(db, t.month)) {
+          const level = b.pct >= 1 ? 100 : b.pct >= 0.8 ? 80 : 0;
+          if (!level || !once(`limite:${t.month}:${b.category}:${level}`, true)) continue;
+          if (level === 100) once(`limite:${t.month}:${b.category}:80`, true);
+          await push.notify(level === 100
+            ? { title: `${b.category}: limite do mês passou`, body: `${brl.format(b.used)} de ${brl.format(b.monthly)} (${Math.round(b.pct * 100)}%).`, url: '/#/limites', tag: `limite-${b.category}` }
+            : { title: `${b.category}: ${Math.round(b.pct * 100)}% do limite`, body: `${brl.format(b.used)} de ${brl.format(b.monthly)}. Restam ${brl.format(b.monthly - b.used)} até o fim do mês.`, url: '/#/limites', tag: `limite-${b.category}` });
+        }
       }
       if (t.day === 1 && t.hour >= 9 && once('job_month', t.month)) {
         const msg = monthSummary(db, prevMonth(t.month));

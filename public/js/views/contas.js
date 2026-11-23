@@ -64,9 +64,20 @@ async function editIncome(i, month, onSaved) {
 
 export async function contasView(root, state, go) {
   const month = state.month;
-  const [bills, incomes, nextBills] = await Promise.all([
-    api.get(`bills?month=${month}`), api.get(`incomes?month=${month}`), api.get(`bills?month=${addMonths(month, 1)}`),
+  const [bills, incomes, nextBills, future] = await Promise.all([
+    api.get(`bills?month=${month}`), api.get(`incomes?month=${month}`), api.get(`bills?month=${addMonths(month, 1)}`), api.get('cards/future'),
   ]);
+  // Installments already committed on each card bill of this month
+  const parcelas = Object.fromEntries(future.filter((f) => f.invoice === month).map((f) => [f.card, f.total]));
+  const cardOf = (d) => ['Nubank', 'Santander', 'Caixa'].find((c) => d.toLowerCase().includes(c.toLowerCase()));
+  const billNote = (b) => {
+    const parts = [b.category];
+    if (b.due) parts.push(`vence ${shortDate(b.due)}`);
+    if (b.paid && b.tx_id) parts.push('baixa pelo extrato');
+    const c = b.category === 'Cartão' && !b.paid ? cardOf(b.description) : null;
+    if (c && parcelas[c]) parts.push(`${money(parcelas[c])} já em parcelas`);
+    return parts.join(', ');
+  };
   const total = bills.reduce((s, b) => s + b.amount, 0);
   const paid = bills.filter((b) => b.paid).reduce((s, b) => s + b.amount, 0);
 
@@ -99,7 +110,7 @@ export async function contasView(root, state, go) {
         h('button', { class: `check ${b.paid ? 'on' : ''}`, 'aria-pressed': String(!!b.paid), 'aria-label': `${b.description}: ${b.paid ? 'paga' : 'não paga'}`, onclick: () => toggle('bills', b, 'paid'), html: b.paid ? ICON.check : '' }),
         h('button', { class: 'check-text', onclick: () => editBill(b, month, () => go()) },
           h('span', {}, b.description),
-          h('small', {}, [b.category, b.due ? `vence ${shortDate(b.due)}` : null].filter(Boolean).join(', '))),
+          h('small', {}, billNote(b))),
         h('span', { class: 'num' }, money(b.amount)))))
         : h('div', { class: 'empty' }, h('p', {}, `Nenhuma conta em ${monthLabel(month)}.`),
           h('button', { class: 'btn primary', onclick: () => editBill(null, month, () => go()) }, 'Adicionar conta'))),
@@ -115,6 +126,6 @@ export async function contasView(root, state, go) {
 
     bills.length && !nextBills.length ? h('section', { class: 'block' },
       h('button', { class: 'btn ghost wide', onclick: copyNext }, `Criar contas de ${monthLabel(addMonths(month, 1))} com base neste mês`),
-      h('p', { class: 'field-hint' }, 'Copia as contas e as entradas previstas, todas como não pagas.')) : null,
+      h('p', { class: 'field-hint' }, 'Copia as contas fixas e as entradas previstas, todas como não pagas (gastos extras ficam de fora). No dia 1 o app faz isso sozinho.')) : null,
   );
 }

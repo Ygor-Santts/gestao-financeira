@@ -4,6 +4,8 @@ import { preview, commit, undoImport } from './importer.js';
 import { createReadStream, existsSync } from 'node:fs';
 import { makeBackup, listBackups, backupPath } from './backup.js';
 import { checkMail, mailConfigured, DEFAULT_SENDERS } from './mail/index.js';
+import { now } from './clock.js';
+import { matchBills, unlinkBills, applyGoal, createMonth, futureInstallments, budgetStatus, irReport } from './features.js';
 
 const round2 = (n) => Math.round((n || 0) * 100) / 100;
 const MONTH = /^\d{4}-\d{2}$/;
@@ -64,7 +66,7 @@ function overview(db, month) {
     patrimonio: round2(naConta + caixinhas + outros),
     mes: totalsFor(db, from, to),
     previsao: { faltaPagar, aReceber, fimDoMes: round2(naConta - faltaPagar + aReceber) },
-    goals, bills, incomes, categorias, aConfirmar: pending,
+    goals, bills, incomes, categorias, aConfirmar: pending, limites: budgetStatus(db, month),
   };
 }
 
@@ -133,6 +135,7 @@ function crud(db, table, method, id, body, query) {
 }
 
 // ---------- transactions ----------
+const goalFor = (type, goalId) => (type === 'investimento' && goalId ? Number(goalId) || null : null);
 function txValues(body, partial) {
   const v = {};
   if (body.date !== undefined) v.date = DATE.test(body.date) ? body.date : bad('Data inválida.');
@@ -182,14 +185,14 @@ export function backup(db) {
     settings: { owner_names: getSetting(db, 'owner_names', []), company_names: getSetting(db, 'company_names', []), acct_map: getSetting(db, 'acct_map', {}) },
     categories: all('categories'),
     transactions: all('transactions'), cards: all('card_items'), goals: all('goals'),
-    bills: all('bills'), incomes: all('incomes'), assets: all('assets'),
+    bills: all('bills'), incomes: all('incomes'), assets: all('assets'), budgets: all('budgets'),
   };
 }
 
 function restore(db, data) {
   if (!data || data.app !== 'financas') bad('Arquivo de backup inválido.');
   return tx(db, () => {
-    for (const t of ['transactions', 'card_items', 'goals', 'bills', 'incomes', 'assets']) db.exec(`DELETE FROM ${t}`);
+    for (const t of ['transactions', 'card_items', 'goals', 'bills', 'incomes', 'assets', 'budgets']) db.exec(`DELETE FROM ${t}`);
     const n = {};
     const run = (sql, rows, map) => {
       const st = db.prepare(sql);
@@ -199,14 +202,16 @@ function restore(db, data) {
     for (const c of data.categories || []) {
       db.prepare('INSERT INTO categories (name, grp, color) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET grp = excluded.grp, color = excluded.color').run(c.name, c.grp, c.color);
     }
-    n.transactions = run('INSERT INTO transactions (date, description, amount, type, category, account, ext_id, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      data.transactions, (r) => [r.date, r.description, round2(r.amount), r.type, r.category || 'A confirmar', r.account || 'Nubank', r.ext_id || r.extId || null, r.note || null]);
+    // Ids are kept so links (caixinha of a transaction, transaction that paid a bill) survive.
+    n.transactions = run('INSERT INTO transactions (id, date, description, amount, type, category, account, ext_id, note, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      data.transactions, (r) => [r.id ?? null, r.date, r.description, round2(r.amount), r.type, r.category || 'A confirmar', r.account || 'Nubank', r.ext_id || r.extId || null, r.note || null, r.goal_id ?? null]);
     n.cards = run('INSERT INTO card_items (card, invoice, date, description, amount, category, ext_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       data.cards, (r) => [r.card, r.invoice, r.date, r.description, round2(r.amount), r.category || 'A confirmar', r.ext_id || r.extId || null]);
-    n.goals = run('INSERT INTO goals (name, current, target, monthly, sort) VALUES (?, ?, ?, ?, ?)',
-      data.goals, (r) => [r.name, r.current || 0, r.target || 0, r.monthly || 0, r.sort || 0]);
-    n.bills = run('INSERT INTO bills (month, description, category, amount, due, paid, sort) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      data.bills, (r) => [r.month, r.description, r.category || 'Contas fixas', r.amount || 0, r.due || null, r.paid ? 1 : 0, r.sort || 0]);
+    n.goals = run('INSERT INTO goals (id, name, current, target, monthly, sort) VALUES (?, ?, ?, ?, ?, ?)',
+      data.goals, (r) => [r.id ?? null, r.name, r.current || 0, r.target || 0, r.monthly || 0, r.sort || 0]);
+    n.bills = run('INSERT INTO bills (month, description, category, amount, due, paid, sort, tx_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      data.bills, (r) => [r.month, r.description, r.category || 'Contas fixas', r.amount || 0, r.due || null, r.paid ? 1 : 0, r.sort || 0, r.tx_id ?? null]);
+    run('INSERT OR REPLACE INTO budgets (category, monthly) VALUES (?, ?)', data.budgets, (r) => [r.category, r.monthly]);
     n.incomes = run('INSERT INTO incomes (month, description, kind, amount, expected, received, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
       data.incomes, (r) => [r.month, r.description, r.kind || null, r.amount || 0, r.expected || null, r.received ? 1 : 0, r.note || null]);
     n.assets = run('INSERT INTO assets (name, kind, account, value, updated) VALUES (?, ?, ?, ?, ?)',
@@ -218,21 +223,9 @@ function restore(db, data) {
 
 function nextMonth(db, from, to) {
   if (!MONTH.test(from) || !MONTH.test(to)) bad('Mês inválido.');
-  return tx(db, () => {
-    const exists = db.prepare('SELECT COUNT(*) n FROM bills WHERE month = ?').get(to).n;
-    if (exists) bad(`Já existem contas em ${to}.`);
-    const shift = (d) => (d ? `${to}-${d.slice(8, 10)}` : null);
-    const bills = db.prepare('SELECT * FROM bills WHERE month = ?').all(from);
-    const ins = db.prepare('INSERT INTO bills (month, description, category, amount, due, paid, sort) VALUES (?, ?, ?, ?, ?, 0, ?)');
-    for (const b of bills) ins.run(to, b.description, b.category, b.amount, shift(b.due), b.sort);
-    const incomes = db.prepare('SELECT * FROM incomes WHERE month = ?').all(from);
-    const has = db.prepare('SELECT COUNT(*) n FROM incomes WHERE month = ?').get(to).n;
-    if (!has) {
-      const insI = db.prepare('INSERT INTO incomes (month, description, kind, amount, expected, received) VALUES (?, ?, ?, ?, ?, 0)');
-      for (const i of incomes) insI.run(to, i.description, i.kind, i.amount, shift(i.expected));
-    }
-    return { bills: bills.length };
-  });
+  const r = createMonth(db, from, to);
+  if (r.exists) bad(`Já existem contas em ${to}.`);
+  return r;
 }
 
 // ---------- router ----------
@@ -280,17 +273,31 @@ export function makeApi(db, auth, { push } = {}) {
         case 'transactions': {
           if (m === 'GET') return send(200, listTransactions(db, q));
           if (m === 'POST') {
-            const v = txValues(await json(), false);
-            const r = db.prepare('INSERT INTO transactions (date, description, amount, type, category, account, note) VALUES (?, ?, ?, ?, ?, ?, ?)')
-              .run(v.date, v.description, v.amount, v.type, v.category || 'A confirmar', v.account || 'Nubank', v.note || null);
-            return send(200, db.prepare('SELECT * FROM transactions WHERE id = ?').get(r.lastInsertRowid));
+            const body = await json();
+            const v = txValues(body, false);
+            const goal = goalFor(v.type, body.goalId);
+            const row = tx(db, () => {
+              const r = db.prepare('INSERT INTO transactions (date, description, amount, type, category, account, note, goal_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                .run(v.date, v.description, v.amount, v.type, v.category || 'A confirmar', v.account || 'Nubank', v.note || null, goal);
+              const t = db.prepare('SELECT * FROM transactions WHERE id = ?').get(r.lastInsertRowid);
+              applyGoal(db, t);
+              return { ...t, paidBills: matchBills(db, [t.id]) };
+            });
+            return send(200, row);
           }
           if (!id) bad('Lançamento inválido.');
           if (m === 'PUT') {
             const body = await json();
             const v = txValues(body, true);
+            const before = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+            if (!before) return send(404, { error: 'Lançamento não encontrado.' });
+            if (body.goalId !== undefined || v.type) v.goal_id = goalFor(v.type || before.type, body.goalId !== undefined ? body.goalId : before.goal_id);
             const keys = Object.keys(v);
-            if (keys.length) db.prepare(`UPDATE transactions SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...keys.map((k) => v[k]), id);
+            tx(db, () => {
+              applyGoal(db, before, -1); // undo the old effect on the caixinha, then apply the new one
+              if (keys.length) db.prepare(`UPDATE transactions SET ${keys.map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...keys.map((k) => v[k]), id);
+              applyGoal(db, db.prepare('SELECT * FROM transactions WHERE id = ?').get(id));
+            });
             // "Apply to similar": same description, still uncategorized
             if (body.applySimilar && v.category) {
               const t = db.prepare('SELECT description FROM transactions WHERE id = ?').get(id);
@@ -298,10 +305,19 @@ export function makeApi(db, auth, { push } = {}) {
             }
             return send(200, db.prepare('SELECT * FROM transactions WHERE id = ?').get(id));
           }
-          if (m === 'DELETE') { db.prepare('DELETE FROM transactions WHERE id = ?').run(id); return send(200, { ok: true }); }
+          if (m === 'DELETE') {
+            tx(db, () => {
+              const t = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+              applyGoal(db, t, -1);
+              unlinkBills(db, [id]);
+              db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+            });
+            return send(200, { ok: true });
+          }
           break;
         }
         case 'cards': {
+          if (m === 'GET' && seg[1] === 'future') return send(200, futureInstallments(db));
           if (m === 'GET') return send(200, cards(db, q));
           if (m === 'POST') {
             const b = await json();
@@ -368,6 +384,26 @@ export function makeApi(db, auth, { push } = {}) {
             return send(200, backup(db));
           }
           if (seg[1] === 'restore' && m === 'POST') return send(200, restore(db, await json()));
+          break;
+        }
+        case 'budgets': {
+          if (m === 'GET') return send(200, budgetStatus(db, MONTH.test(q.get('month') || '') ? q.get('month') : now().month));
+          if (m === 'PUT') {
+            const b = await json();
+            const cat = str(b.category, 80) || bad('Escolha a categoria.');
+            const v = money(b.monthly || 0);
+            if (v > 0) db.prepare('INSERT INTO budgets (category, monthly) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET monthly = excluded.monthly').run(cat, v);
+            else db.prepare('DELETE FROM budgets WHERE category = ?').run(cat);
+            return send(200, { ok: true });
+          }
+          break;
+        }
+        case 'ir': {
+          if (m === 'GET') {
+            const y = q.get('year') || String(new Date().getFullYear());
+            if (!/^\d{4}$/.test(y)) bad('Ano inválido.');
+            return send(200, irReport(db, y));
+          }
           break;
         }
         case 'settings': {
