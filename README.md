@@ -116,19 +116,23 @@ No iPhone, os avisos só funcionam com o app instalado na tela de início.
 - **Na nuvem:** preencha `PASTA_BACKUP_NUVEM` no `.env` com uma pasta sincronizada (por exemplo, uma pasta do Google Drive para computador). O script de atualização automática copia os backups para lá.
 - **Manual:** **Mais › Backup › Baixar backup**.
 
-## Atualização automática (Windows)
+## Atualização automática
 
-Uma tarefa agendada confere o GitHub a cada 10 minutos. Quando há versão nova **que passou nos testes**, ela faz um backup, atualiza e confere se o app voltou. Se não voltar, retorna sozinha para a versão anterior. Ela também sobe o app se ele estiver parado, por exemplo depois de reiniciar o PC.
+Uma tarefa confere o GitHub a cada 10 minutos. Quando há versão nova **que passou nos testes**, ela faz um backup, atualiza e confere se o app voltou. Se não voltar, retorna sozinha para a versão anterior e não tenta mais aquela versão. Ela também sobe o app se ele estiver parado, por exemplo depois de reiniciar o PC.
 
-Para ligar, uma vez, no PowerShell, na pasta do projeto:
+Para ligar, uma vez, **no terminal do Ubuntu (WSL)**, dentro da pasta do projeto:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\instalar.ps1
+```bash
+cd ~/workspace/gestao-financeira      # a pasta onde está o projeto
+bash scripts/instalar-atualizacao.sh
 ```
 
-Se aparecer "Acesso negado", abra o PowerShell como administrador e rode de novo. No Docker Desktop, deixe ligado **Settings › General › Start Docker Desktop when you sign in**.
+- **No Windows com WSL:** cria a tarefa "Financas - atualizar" no Agendador de Tarefas do Windows. Ela chama o script dentro do Ubuntu sem abrir janela e funciona com o terminal fechado. No Docker Desktop, deixe ligados **Start Docker Desktop when you sign in** e a integração com o Ubuntu (**Settings › Resources › WSL integration**).
+- **Em um Linux comum:** usa o cron.
 
-O que a tarefa fez fica em `logs\atualizar.log`. Para desligar: `scripts\windows\desinstalar.ps1`.
+O que a tarefa fez fica em `logs/atualizar.log`. Para desligar: `bash scripts/desinstalar-atualizacao.sh`.
+
+Para a cópia na nuvem (`PASTA_BACKUP_NUVEM`), use o caminho da pasta como o Ubuntu a vê, por exemplo `/mnt/c/Users/SEU_USUARIO/Google Drive/Financas`.
 
 ## Segurança
 

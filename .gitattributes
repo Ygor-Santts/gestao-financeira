@@ -1,4 +1,2 @@
-# Windows scripts keep Windows line endings
-*.ps1 text eol=crlf
-*.vbs text eol=crlf
+# Shell scripts must keep Unix line endings (they run inside Linux/WSL)
 *.sh text eol=lf
