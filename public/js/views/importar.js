@@ -1,5 +1,5 @@
 import { api, meta } from '../api.js';
-import { h, money, signed, shortDate, toast, select, field, TYPE, monthLabel, confirmDialog } from '../util.js';
+import { h, fill, money, signed, shortDate, toast, select, field, TYPE, monthLabel, confirmDialog } from '../util.js';
 
 const HELP = [
   ['Nubank (conta e Nu Empresas)', 'No app: Extrato › ícone de compartilhar › escolha o período › OFX ou CSV. Também vale o anexo do e-mail do Nubank.'],
@@ -46,7 +46,7 @@ export async function importarView(root, state, go) {
   }
   if (pending) return reviewView(root, m, go);
 
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top plain' }, h('h1', {}, 'Importar extrato')),
     h('section', { class: 'drop' },
       h('label', { for: 'file', class: 'btn primary big' }, 'Escolher arquivo'),
@@ -136,7 +136,7 @@ function reviewView(root, m, go) {
   const dups = p.items.filter((i) => i.duplicate).length;
   const total = p.items.filter((i) => !i.duplicate).reduce((s, i) => s + i.amount, 0);
   refresh();
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top plain' }, h('h1', {}, 'Conferir antes de importar')),
     h('section', { class: 'block review-head' },
       h('p', { class: 'file-name' }, p.filename),

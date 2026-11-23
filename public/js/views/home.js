@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { h, money, money0, monthSwitcher, monthName, monthShort, toast, ICON, cap } from '../util.js';
+import { h, fill, money, money0, monthSwitcher, monthName, monthShort, toast, ICON, cap } from '../util.js';
 import { editBill } from './contas.js';
 
 // One plain sentence that says how the month went, keeping spending, caixinhas
@@ -61,7 +61,7 @@ export async function homeView(root, state, go) {
     go();
   };
 
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top' }, h('h1', { class: 'sr-only' }, 'Início'), monthSwitcher(month, (m) => go({ month: m }))),
 
     h('section', { class: 'have-card', 'aria-label': 'O que você tem hoje' },

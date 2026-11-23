@@ -1,6 +1,6 @@
 import { api, meta } from '../api.js';
 import {
-  h, money, money0, signed, toast, sheet, field, select, ICON, monthLabel, monthShort, cap, shortDate,
+  h, fill, money, money0, signed, toast, sheet, field, select, ICON, monthLabel, monthShort, cap, shortDate,
   parseMoneyInput, moneyInputValue, confirmDialog, today, addMonths, thisMonth,
 } from '../util.js';
 
@@ -16,7 +16,7 @@ export async function maisView(root) {
     ['#/backup', 'Backup', 'Baixar ou restaurar todos os dados'],
     ['#/ajustes', 'Ajustes', 'Seus nomes, para reconhecer transferências entre suas contas'],
   ];
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top plain' }, h('h1', {}, 'Mais')),
     h('ul', { class: 'menu' }, items.map(([href, t, d]) => h('li', {}, h('a', { href },
       h('span', {}, h('strong', {}, t), h('small', {}, d)), h('span', { html: ICON.chevron }))))),
@@ -64,7 +64,7 @@ function editGoal(g, onSaved) {
 export async function metasView(root, state, go) {
   const goals = await api.get('goals');
   const total = goals.reduce((s, g) => s + g.current, 0);
-  root.replaceChildren(
+  fill(root, 
     back('Caixinhas e metas', '#/'),
     h('section', { class: 'have-card small' }, h('p', { class: 'have-label' }, 'Guardado nas caixinhas'), h('p', { class: 'have-total num' }, money(total)),
       h('p', { class: 'have-foot' }, 'Dinheiro guardado não é gasto: ele continua sendo seu.')),
@@ -120,11 +120,11 @@ export async function patrimonioView(root, state, go) {
   const row = (a) => h('li', {}, h('button', { onclick: () => editAsset(a, () => go()) },
     h('span', {}, h('span', {}, a.name), a.updated ? h('small', {}, `atualizado em ${shortDate(a.updated)}`) : null),
     h('span', { class: `num ${a.value < 0 ? 'out' : ''}` }, money(a.value))));
-  root.replaceChildren(
+  fill(root, 
     back('Patrimônio', '#/'),
     h('section', { class: 'have-card small' }, h('p', { class: 'have-label' }, 'Patrimônio líquido'), h('p', { class: 'have-total num' }, money(total)),
       h('p', { class: 'have-foot' }, 'Tudo o que você tem, menos o que deve.')),
-    groups.map(([t, list]) => list.length ? h('section', { class: 'block' }, h('h2', {}, t), h('ul', { class: 'plain-list' }, list.map(row))) : null),
+    ...groups.map(([t, list]) => list.length ? h('section', { class: 'block' }, h('h2', {}, t), h('ul', { class: 'plain-list' }, list.map(row))) : null),
     h('section', { class: 'block' }, h('div', { class: 'block-head' }, h('h2', {}, 'Caixinhas'), h('a', { href: '#/metas' }, 'Editar')),
       h('ul', { class: 'plain-list' }, goals.map((g) => h('li', {}, h('a', { href: '#/metas' }, h('span', {}, g.name), h('span', { class: 'num have' }, money(g.current))))))),
     h('button', { class: 'btn ghost wide', onclick: () => editAsset(null, () => go()) }, 'Adicionar item'),
@@ -163,7 +163,7 @@ export async function cartoesView(root, state, go) {
   const ofInvoice = d.invoices.filter((i) => i.invoice === d.invoice);
   const set = (k, v) => { const n = new URLSearchParams(q); if (v) n.set(k, v); else n.delete(k); if (k === 'invoice') n.delete('card'); location.hash = `#/cartoes?${n}`; };
   const total = d.items.reduce((s, i) => s + i.amount, 0);
-  root.replaceChildren(
+  fill(root, 
     back('Faturas dos cartões'),
     invoiceMonths.length ? h('div', { class: 'chips scroll' }, invoiceMonths.slice(0, 18).map((m) => h('button', { class: 'chip', 'aria-selected': String(m === d.invoice), onclick: () => set('invoice', m) }, `${cap(monthShort(m))} ${m.slice(2, 4)}`))) : null,
     d.invoice ? h('section', { class: 'block' },
@@ -187,7 +187,7 @@ export async function anoView(root, state, go) {
   const y = state.query.get('ano') || state.month.slice(0, 4);
   const d = await api.get(`year?year=${y}`);
   const months = d.months.filter((m) => !m.vazio);
-  root.replaceChildren(
+  fill(root, 
     back(`Mês a mês`),
     h('div', { class: 'month-switch' },
       h('a', { class: 'icon-btn', href: `#/ano?ano=${+y - 1}`, 'aria-label': 'Ano anterior', html: ICON.left }),
@@ -225,7 +225,7 @@ export async function backupView(root, state, go) {
       location.hash = '#/';
     } catch (e) { toast(e.message, 'err'); }
   });
-  root.replaceChildren(
+  fill(root, 
     back('Backup'),
     h('section', { class: 'block' },
       h('h2', {}, 'Baixar backup'),
@@ -243,7 +243,7 @@ export async function ajustesView(root) {
   const s = await api.get('settings');
   const owners = h('textarea', { rows: 3 }, s.owner_names.join('\n'));
   const company = h('textarea', { rows: 2 }, s.company_names.join('\n'));
-  root.replaceChildren(
+  fill(root, 
     back('Ajustes'),
     h('form', {
       class: 'form block', onsubmit: async (e) => {

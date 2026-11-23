@@ -1,6 +1,6 @@
 import { api, meta } from '../api.js';
 import {
-  h, money, signed, monthSwitcher, dayLabel, today, toast, sheet, field, select, ICON, TYPE,
+  h, fill, money, signed, monthSwitcher, dayLabel, today, toast, sheet, field, select, ICON, TYPE,
   parseMoneyInput, moneyInputValue, confirmDialog,
 } from '../util.js';
 
@@ -111,7 +111,7 @@ export async function extratoView(root, state, go) {
     oninput: (e) => { clearTimeout(timer); timer = setTimeout(() => setQuery('q', e.target.value.trim()), 350); },
   });
 
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top' }, h('h1', { class: 'sr-only' }, 'Extrato'), monthSwitcher(month, (m) => go({ month: m }))),
     h('div', { class: 'search' }, h('span', { html: ICON.search }), searchInput),
     h('div', { class: 'chips', role: 'tablist', 'aria-label': 'Filtrar por tipo' },

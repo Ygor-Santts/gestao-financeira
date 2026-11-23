@@ -61,6 +61,13 @@ export function h(tag, attrs, ...children) {
   return el;
 }
 
+// Replace a container's content. Accepts nested arrays and skips null/false,
+// so screens can write conditional blocks inline.
+export function fill(root, ...children) {
+  root.replaceChildren(...children.flat(Infinity).filter((c) => c != null && c !== false));
+  return root;
+}
+
 export function toast(msg, kind = '') {
   const t = h('div', { class: `toast ${kind}`, role: 'status' }, msg);
   document.body.append(t);

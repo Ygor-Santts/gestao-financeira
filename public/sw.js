@@ -1,6 +1,6 @@
 // Service worker: keeps the app shell available offline and receives files
 // shared from other apps (Android share sheet → "Finanças").
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = [
   '/', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/app.js', '/js/api.js', '/js/util.js',

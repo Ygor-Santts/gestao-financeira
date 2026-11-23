@@ -1,6 +1,6 @@
 import { api, meta } from '../api.js';
 import {
-  h, money, monthSwitcher, monthLabel, toast, sheet, field, select, ICON, addMonths, parseMoneyInput,
+  h, fill, money, monthSwitcher, monthLabel, toast, sheet, field, select, ICON, addMonths, parseMoneyInput,
   moneyInputValue, confirmDialog, shortDate,
 } from '../util.js';
 
@@ -84,7 +84,7 @@ export async function contasView(root, state, go) {
     } catch (e) { toast(e.message, 'err'); }
   };
 
-  root.replaceChildren(
+  fill(root, 
     h('header', { class: 'top' }, h('h1', { class: 'sr-only' }, 'Contas do mês'), monthSwitcher(month, (m) => go({ month: m }))),
     h('dl', { class: 'totals' },
       h('div', {}, h('dt', {}, 'Contas'), h('dd', { class: 'num' }, money(total))),
