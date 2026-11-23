@@ -82,16 +82,53 @@ npm test
 
 Entre com a senha, vá em **Mais › Backup › Restaurar** e escolha o arquivo de dados inicial (exportado da planilha). Depois é só importar os extratos novos em **Importar**.
 
+## Extratos direto do Gmail
+
+O app confere o Gmail a cada 30 minutos e traz os anexos OFX, CSV ou PDF:
+
+- dos remetentes cadastrados em **Mais › Ajustes** (por padrão, o Nubank: `todomundo@nubank.com.br`);
+- dos e-mails que **você manda para você mesmo** com o arquivo anexo. Isso serve para faturas do Santander e da Caixa: encaminhe ou envie o PDF para o seu próprio e-mail.
+
+Eles aparecem em **Importar › Chegaram por e-mail**, prontos para conferir e confirmar. Nada é lançado sem você confirmar. O app só lê os e-mails: não apaga e não marca nada como lido.
+
+Para ligar:
+
+1. A conta Google precisa ter a **verificação em duas etapas** ativa.
+2. Crie uma **senha de app** em <https://myaccount.google.com/apppasswords> (nome: "Finanças"). O Google mostra 16 letras.
+3. No `.env`, preencha `GMAIL_EMAIL` com o seu e-mail e `GMAIL_SENHA_APP` com essas 16 letras (com ou sem espaços).
+4. Rode `docker compose up -d`. Em **Importar**, use **Buscar agora** para testar.
+
+Faturas em PDF com senha: cadastre a senha em **Mais › Ajustes › Senhas de PDF**.
+
+## Avisos no celular
+
+Em **Mais › Ajustes › Ligar avisos neste aparelho** (com o app aberto pelo endereço `https://…ts.net`). Chegam:
+
+- às 9h, as contas que vencem em até 2 dias ou estão atrasadas;
+- quando chega um extrato novo pelo Gmail;
+- no dia 1, o resumo do mês que fechou.
+
+No iPhone, os avisos só funcionam com o app instalado na tela de início.
+
 ## Backup
 
-- No app: **Mais › Backup › Baixar backup** gera um JSON com tudo.
-- No PC (com Docker), uma cópia diária do banco guardada por 14 dias, via cron:
+- **Automático:** todo dia às 3h o app grava na pasta `backups` do projeto um JSON (que pode ser restaurado no app) e uma cópia do banco. Ficam os últimos 30 dias. Também dá para baixar pela tela **Mais › Backup**.
+- **Na nuvem:** preencha `PASTA_BACKUP_NUVEM` no `.env` com uma pasta sincronizada (por exemplo, uma pasta do Google Drive para computador). O script de atualização automática copia os backups para lá.
+- **Manual:** **Mais › Backup › Baixar backup**.
 
-  ```
-  0 4 * * * cd /caminho/do/projeto && sh scripts/backup.sh >> backups/backup.log 2>&1
-  ```
+## Atualização automática (Windows)
 
-O GitHub Actions só testa o código e a imagem Docker a cada push. Ele não publica nada em servidor nenhum.
+Uma tarefa agendada confere o GitHub a cada 10 minutos. Quando há versão nova **que passou nos testes**, ela faz um backup, atualiza e confere se o app voltou. Se não voltar, retorna sozinha para a versão anterior. Ela também sobe o app se ele estiver parado, por exemplo depois de reiniciar o PC.
+
+Para ligar, uma vez, no PowerShell, na pasta do projeto:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\instalar.ps1
+```
+
+Se aparecer "Acesso negado", abra o PowerShell como administrador e rode de novo. No Docker Desktop, deixe ligado **Settings › General › Start Docker Desktop when you sign in**.
+
+O que a tarefa fez fica em `logs\atualizar.log`. Para desligar: `scripts\windows\desinstalar.ps1`.
 
 ## Segurança
 

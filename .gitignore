@@ -10,3 +10,4 @@ backups/
 *.pdf
 financas-backup-*.json
 dados-financas*.json
+logs/

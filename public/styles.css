@@ -332,3 +332,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--have); outl
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* inbox from Gmail */
+.inbox li.fresh .imp-main span { font-weight: 600; }
+.inbox-btns { display: flex; gap: 6px; flex: none; }

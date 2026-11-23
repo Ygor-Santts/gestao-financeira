@@ -1,6 +1,6 @@
 // Service worker: keeps the app shell available offline and receives files
 // shared from other apps (Android share sheet → "Finanças").
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = [
   '/', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/app.js', '/js/api.js', '/js/util.js',
@@ -45,4 +45,29 @@ self.addEventListener('fetch', (e) => {
     }
     return res;
   }).catch(async () => (await caches.match(e.request.mode === 'navigate' ? '/' : e.request)) || Response.error()));
+});
+
+// Notifications sent by the app (bills due, new statement, month summary).
+self.addEventListener('push', (e) => {
+  let msg = {};
+  try { msg = e.data ? e.data.json() : {}; } catch { msg = { body: e.data?.text() }; }
+  e.waitUntil(self.registration.showNotification(msg.title || 'Finanças', {
+    body: msg.body || '',
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    tag: msg.tag,
+    data: { url: msg.url || '/' },
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || '/', self.location.origin).href;
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const w of wins) {
+      if (new URL(w.url).origin === self.location.origin) { await w.focus(); return w.navigate(url); }
+    }
+    return self.clients.openWindow(url);
+  })());
 });

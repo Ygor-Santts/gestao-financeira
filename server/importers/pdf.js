@@ -6,15 +6,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMoney } from './csv.js';
 
-export async function pdfToText(buf) {
+function run(file, password) {
+  const args = ['-layout', ...(password ? ['-upw', password] : []), file, '-'];
+  return new Promise((resolve, reject) => {
+    execFile('pdftotext', args, { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (err, out, errOut) =>
+      err ? reject(Object.assign(new Error('Não consegui ler este PDF.'), { locked: /password|senha|encrypt/i.test(String(errOut)) })) : resolve(out));
+  });
+}
+
+// Bank bills often come locked with a password (usually digits of the CPF).
+// The passwords saved in Ajustes are tried one by one.
+export async function pdfToText(buf, passwords = []) {
   const dir = await mkdtemp(join(tmpdir(), 'fin-'));
   const file = join(dir, 'in.pdf');
   try {
     await writeFile(file, buf);
-    return await new Promise((resolve, reject) => {
-      execFile('pdftotext', ['-layout', file, '-'], { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (err, out) =>
-        err ? reject(new Error('Não consegui ler este PDF.')) : resolve(out));
-    });
+    try {
+      return await run(file);
+    } catch (e) {
+      if (!e.locked) throw e;
+      for (const pw of passwords) {
+        try { return await run(file, pw); } catch { /* next */ }
+      }
+      throw new Error('Este PDF tem senha. Cadastre a senha em Mais › Ajustes › Senhas de PDF e tente de novo.');
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

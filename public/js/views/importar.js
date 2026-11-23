@@ -11,7 +11,7 @@ let pending = null; // preview kept while the person reviews it
 
 export async function importarView(root, state, go) {
   const m = await meta();
-  const history = await api.get('imports');
+  const [history, inbox] = await Promise.all([api.get('imports'), api.get('inbox')]);
 
   const input = h('input', { type: 'file', accept: '.ofx,.csv,.pdf,.txt,.bin,application/pdf,text/csv', class: 'sr-only', id: 'file' });
   const status = h('p', { class: 'muted', 'aria-live': 'polite' });
@@ -53,6 +53,7 @@ export async function importarView(root, state, go) {
       input,
       h('p', { class: 'muted' }, 'OFX, CSV ou PDF do Nubank, Nu Empresas, Caixa e Santander. O que já estiver lançado é reconhecido e fica de fora.'),
       status),
+    inboxSection(inbox, go),
     h('section', { class: 'block' },
       h('h2', {}, 'Como exportar'),
       h('dl', { class: 'help' }, HELP.map(([t, d]) => h('div', {}, h('dt', {}, t), h('dd', {}, d))))),
@@ -154,4 +155,57 @@ function reviewView(root, m, go) {
       h('button', { class: 'btn ghost', onclick: () => { pending = null; go(); } }, 'Cancelar'),
       commitBtn),
   );
+}
+
+const STATUS = { novo: 'Para conferir', importado: 'Importado', 'sem novidades': 'Nada novo', descartado: 'Descartado', erro: 'Não deu para ler' };
+
+function mailStatusText(inbox) {
+  if (!inbox.configured) return 'Gmail ainda não ligado. Veja no README como colocar o e-mail e a senha de app no arquivo .env do notebook.';
+  const st = inbox.status;
+  if (!st) return 'O app confere o Gmail a cada 30 minutos.';
+  const at = new Date(st.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return st.ok ? `Gmail conferido em ${at}. O app confere a cada 30 minutos.` : `Última tentativa em ${at} falhou: ${st.error}`;
+}
+
+function inboxSection(inbox, go) {
+  const fresh = inbox.items.filter((i) => i.status === 'novo');
+  const others = inbox.items.filter((i) => i.status !== 'novo').slice(0, 6);
+  const checkBtn = h('button', {
+    class: 'link', onclick: async () => {
+      checkBtn.disabled = true; checkBtn.textContent = 'Buscando…';
+      try {
+        const r = await api.post('mail/check');
+        toast(r.added ? `${r.added} ${r.added === 1 ? 'extrato novo' : 'extratos novos'}` : 'Nenhum extrato novo no Gmail', 'ok');
+        go();
+      } catch (e) { toast(e.message, 'err'); checkBtn.disabled = false; checkBtn.textContent = 'Buscar agora'; }
+    },
+  }, 'Buscar agora');
+  const open = async (it) => {
+    try {
+      pending = await api.post(`inbox/${it.id}/preview`);
+      pending.items.forEach((i) => { i.include = !i.duplicate; });
+      go();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  const discard = async (it) => {
+    await api.post(`inbox/${it.id}/discard`);
+    toast('Extrato descartado', 'ok');
+    go();
+  };
+  const row = (it) => {
+    const s = it.summary || {};
+    const detail = s.error ? s.error
+      : [s.account, s.kind === 'card' ? 'fatura' : 'extrato', it.status === 'novo' ? `${s.novos} de ${s.total} novos` : STATUS[it.status]].filter(Boolean).join(', ');
+    return h('li', { class: it.status === 'novo' ? 'fresh' : '' },
+      h('span', { class: 'imp-main' }, h('span', {}, it.filename), h('small', {}, detail)),
+      it.status === 'novo' || it.status === 'erro'
+        ? h('span', { class: 'inbox-btns' },
+          it.status === 'novo' ? h('button', { class: 'btn primary small', onclick: () => open(it) }, 'Conferir') : null,
+          h('button', { class: 'btn ghost small', onclick: () => discard(it) }, 'Descartar'))
+        : h('button', { class: 'btn ghost small', onclick: () => open(it) }, 'Abrir'));
+  };
+  return h('section', { class: 'block' },
+    h('div', { class: 'block-head' }, h('h2', {}, 'Chegaram por e-mail'), inbox.configured ? checkBtn : null),
+    h('p', { class: 'field-hint' }, mailStatusText(inbox)),
+    fresh.length || others.length ? h('ul', { class: 'imports inbox' }, fresh.map(row), others.map(row)) : null);
 }

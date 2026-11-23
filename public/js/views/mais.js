@@ -210,7 +210,10 @@ export async function anoView(root, state, go) {
 }
 
 // ---------- Backup ----------
+const kb = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
+
 export async function backupView(root, state, go) {
+  const auto = await api.get('backups');
   const input = h('input', { type: 'file', accept: '.json,application/json', class: 'sr-only', id: 'restore' });
   input.addEventListener('change', async () => {
     const f = input.files[0];
@@ -225,36 +228,112 @@ export async function backupView(root, state, go) {
       location.hash = '#/';
     } catch (e) { toast(e.message, 'err'); }
   });
-  fill(root, 
+  const days = [...new Set(auto.files.map((f) => f.day))];
+  fill(root,
     back('Backup'),
     h('section', { class: 'block' },
-      h('h2', {}, 'Baixar backup'),
-      h('p', { class: 'muted' }, 'Um arquivo com todos os lançamentos, faturas, contas, caixinhas e patrimônio. Guarde em um lugar seguro.'),
+      h('div', { class: 'block-head' }, h('h2', {}, 'Backups automáticos'),
+        h('button', { class: 'link', onclick: async () => { await api.post('backups/now'); toast('Backup feito', 'ok'); go(); } }, 'Fazer agora')),
+      h('p', { class: 'muted' }, 'Todo dia às 3h o app guarda uma cópia na pasta backups do projeto, no notebook. Ficam os últimos 30 dias.'),
+      days.length ? h('ul', { class: 'plain-list' }, days.slice(0, 10).map((d) => {
+        const files = auto.files.filter((f) => f.day === d);
+        const json = files.find((f) => f.kind === 'json');
+        return h('li', {}, h('a', { href: `/api/backups/${json ? json.name : files[0].name}`, download: true },
+          h('span', {}, h('span', {}, shortDate(d) + '/' + d.slice(0, 4)), h('small', {}, json ? `${kb(json.size)}, pode restaurar aqui` : 'cópia do banco')),
+          h('span', { class: 'muted' }, 'Baixar')));
+      })) : h('p', { class: 'muted' }, 'Ainda não houve backup automático.')),
+    h('section', { class: 'block' },
+      h('h2', {}, 'Baixar backup agora'),
+      h('p', { class: 'muted' }, 'Um arquivo com todos os lançamentos, faturas, contas, caixinhas e patrimônio.'),
       h('a', { class: 'btn primary', href: '/api/backup', download: true }, 'Baixar backup')),
     h('section', { class: 'block' },
       h('h2', {}, 'Restaurar'),
-      h('p', { class: 'muted' }, 'Substitui tudo o que está no app pelo conteúdo do arquivo. Use para trazer os dados da planilha ou voltar um backup.'),
+      h('p', { class: 'muted' }, 'Substitui tudo o que está no app pelo conteúdo do arquivo.'),
       h('label', { class: 'btn ghost', for: 'restore' }, 'Escolher arquivo de backup'), input),
   );
 }
 
 // ---------- Ajustes ----------
-export async function ajustesView(root) {
+const b64ToBytes = (b64) => {
+  const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (b64.length % 4)) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+};
+
+async function pushSection(go) {
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const info = await api.get('push/key');
+  if (!supported) {
+    return h('section', { class: 'block' }, h('h2', {}, 'Avisos no celular'),
+      h('p', { class: 'muted' }, /iPhone|iPad/.test(navigator.userAgent)
+        ? 'No iPhone, os avisos só funcionam com o app instalado: Compartilhar › Adicionar à Tela de Início, e abra por lá.'
+        : 'Este navegador não recebe avisos. Use o app instalado no celular, pelo endereço https.'));
+  }
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  const on = !!sub && Notification.permission === 'granted';
+  const enable = async () => {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { toast('Os avisos foram bloqueados. Libere nas configurações do navegador.', 'err'); return; }
+      const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(info.publicKey) });
+      await api.post('push/subscribe', { subscription: s.toJSON(), device: navigator.userAgent.slice(0, 120) });
+      await api.post('push/test');
+      toast('Avisos ligados neste aparelho', 'ok');
+      go();
+    } catch (e) { toast(e.message || 'Não deu para ligar os avisos.', 'err'); }
+  };
+  const disable = async () => {
+    await api.post('push/unsubscribe', { endpoint: sub.endpoint });
+    await sub.unsubscribe();
+    toast('Avisos desligados neste aparelho', 'ok');
+    go();
+  };
+  return h('section', { class: 'block' },
+    h('h2', {}, 'Avisos no celular'),
+    h('p', { class: 'muted' }, 'Contas que vencem em até 2 dias (às 9h), extrato novo que chegou por e-mail e o resumo do mês no dia 1.'),
+    on ? h('div', { class: 'row-btns' },
+      h('button', { class: 'btn ghost', onclick: disable }, 'Desligar'),
+      h('button', { class: 'btn primary', onclick: async () => { const r = await api.post('push/test'); toast(r.sent ? 'Aviso de teste enviado' : 'Não consegui entregar o aviso', r.sent ? 'ok' : 'err'); } }, 'Enviar teste'))
+      : h('button', { class: 'btn primary', onclick: enable }, 'Ligar avisos neste aparelho'),
+    h('p', { class: 'field-hint' }, on ? `Ligado neste aparelho. Aparelhos com aviso: ${info.devices}.` : `Aparelhos com aviso: ${info.devices}.`));
+}
+
+export async function ajustesView(root, state, go) {
   const s = await api.get('settings');
   const owners = h('textarea', { rows: 3 }, s.owner_names.join('\n'));
   const company = h('textarea', { rows: 2 }, s.company_names.join('\n'));
-  fill(root, 
+  const senders = h('textarea', { rows: 3 }, s.mail_senders.join('\n'));
+  const pdfPass = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Ex.: os 5 primeiros dígitos do CPF' });
+  const split = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
+  fill(root,
     back('Ajustes'),
+    await pushSection(go),
     h('form', {
       class: 'form block', onsubmit: async (e) => {
         e.preventDefault();
-        const split = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
-        await api.put('settings', { owner_names: split(owners), company_names: split(company) });
+        await api.put('settings', { owner_names: split(owners), company_names: split(company), mail_senders: split(senders) });
         toast('Ajustes salvos', 'ok');
       },
     },
+    h('h2', {}, 'Reconhecer lançamentos'),
     field('Seu nome como aparece nos extratos', owners, 'Um por linha. Pix entre contas com esse nome contam como "Entre minhas contas", não como gasto.'),
     field('Sua empresa', company, 'Um por linha. O que a empresa manda para sua conta pessoal entra como Salário PJ.'),
+    field('Remetentes no Gmail', senders, 'Um por linha. "me" pega os e-mails que você manda para você mesmo com o arquivo anexo.'),
     h('button', { class: 'btn primary', type: 'submit' }, 'Salvar ajustes')),
+    h('form', {
+      class: 'form block', onsubmit: async (e) => {
+        e.preventDefault();
+        if (!pdfPass.value) return;
+        await api.put('settings', { pdf_passwords_add: [pdfPass.value] });
+        toast('Senha de PDF salva', 'ok');
+        go();
+      },
+    },
+    h('h2', {}, 'Senhas de PDF'),
+    h('p', { class: 'muted' }, `Faturas em PDF às vezes vêm com senha. O app tenta cada senha salva. Salvas: ${s.pdf_passwords}.`),
+    field('Nova senha', pdfPass),
+    h('div', { class: 'row-btns' },
+      s.pdf_passwords ? h('button', { type: 'button', class: 'btn ghost danger-text', onclick: async () => { await api.put('settings', { pdf_passwords_clear: true }); toast('Senhas apagadas', 'ok'); go(); } }, 'Apagar todas') : null,
+      h('button', { class: 'btn primary', type: 'submit' }, 'Salvar senha'))),
   );
 }

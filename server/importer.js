@@ -8,11 +8,11 @@ import { getSetting, setSetting, tx } from './db.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
-async function readFile(buf, filename) {
+async function readFile(buf, filename, passwords = []) {
   const name = (filename || '').toLowerCase();
   const head = buf.subarray(0, 5).toString('latin1');
   if (name.endsWith('.pdf') || head === '%PDF-') {
-    return parsePdfText(await pdfToText(buf));
+    return parsePdfText(await pdfToText(buf, passwords));
   }
   const text = decodeText(buf);
   if (name.endsWith('.ofx') || looksLikeOfx(text)) {
@@ -35,7 +35,7 @@ function invoiceGuess(parsed, filename) {
 }
 
 export async function preview(db, buf, filename) {
-  const parsed = await readFile(buf, filename);
+  const parsed = await readFile(buf, filename, getSetting(db, 'pdf_passwords', []));
   const acctMap = getSetting(db, 'acct_map', {});
   let account = parsed.bank || null;
   if (parsed.acctId && acctMap[parsed.acctId]) account = acctMap[parsed.acctId];

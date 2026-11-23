@@ -1,6 +1,6 @@
 # Runs the whole app on one machine (your PC or any server): one container,
-# the database in a Docker volume. Put the password in a .env file next to
-# this one (see .env.example), then:
+# the database in a Docker volume, daily backups in ./backups.
+# Put the settings in a .env file next to this one (see .env.example), then:
 #   docker compose up -d --build
 services:
   financas:
@@ -8,10 +8,14 @@ services:
     restart: unless-stopped
     environment:
       FINANCAS_SENHA: ${FINANCAS_SENHA:?Defina FINANCAS_SENHA no arquivo .env}
+      GMAIL_EMAIL: ${GMAIL_EMAIL:-}
+      GMAIL_SENHA_APP: ${GMAIL_SENHA_APP:-}
+      FUSO: ${FUSO:-America/Sao_Paulo}
     ports:
       - "${PORTA:-8080}:8080"
     volumes:
       - financas_data:/data
+      - ./backups:/backups
     mem_limit: 256m
     logging:
       driver: json-file

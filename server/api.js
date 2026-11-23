@@ -1,6 +1,9 @@
 // REST API. Every route under /api except login needs the session cookie.
 import { TYPES, DEFAULT_ACCOUNTS, DEFAULT_CARDS, getSetting, setSetting, tx } from './db.js';
 import { preview, commit, undoImport } from './importer.js';
+import { createReadStream, existsSync } from 'node:fs';
+import { makeBackup, listBackups, backupPath } from './backup.js';
+import { checkMail, mailConfigured, DEFAULT_SENDERS } from './mail/index.js';
 
 const round2 = (n) => Math.round((n || 0) * 100) / 100;
 const MONTH = /^\d{4}-\d{2}$/;
@@ -172,7 +175,7 @@ function cards(db, q) {
 }
 
 // ---------- backup ----------
-function backup(db) {
+export function backup(db) {
   const all = (t) => db.prepare(`SELECT * FROM ${t}`).all();
   return {
     app: 'financas', version: 1, exported: new Date().toISOString(),
@@ -233,7 +236,7 @@ function nextMonth(db, from, to) {
 }
 
 // ---------- router ----------
-export function makeApi(db, auth) {
+export function makeApi(db, auth, { push } = {}) {
   return async function handle(req, res, url, readBody, send) {
     const path = url.pathname.replace(/\/+$/, '');
     const m = req.method;
@@ -346,7 +349,12 @@ export function makeApi(db, auth) {
             const name = decodeURIComponent(req.headers['x-filename'] || 'arquivo');
             return send(200, await preview(db, buf, name));
           }
-          if (seg[1] === 'commit' && m === 'POST') return send(200, commit(db, await json()));
+          if (seg[1] === 'commit' && m === 'POST') {
+            const b = await json();
+            const r = commit(db, b);
+            if (b.inboxId) db.prepare("UPDATE inbox SET status = 'importado' WHERE id = ?").run(Number(b.inboxId));
+            return send(200, r);
+          }
           break;
         }
         case 'imports': {
@@ -363,11 +371,78 @@ export function makeApi(db, auth) {
           break;
         }
         case 'settings': {
-          if (m === 'GET') return send(200, { owner_names: getSetting(db, 'owner_names', []), company_names: getSetting(db, 'company_names', []) });
+          if (m === 'GET') {
+            return send(200, {
+              owner_names: getSetting(db, 'owner_names', []), company_names: getSetting(db, 'company_names', []),
+              mail_senders: getSetting(db, 'mail_senders', DEFAULT_SENDERS),
+              pdf_passwords: getSetting(db, 'pdf_passwords', []).length, // only how many, never the passwords
+            });
+          }
           if (m === 'PUT') {
             const b = await json();
-            for (const k of ['owner_names', 'company_names']) if (Array.isArray(b[k])) setSetting(db, k, b[k].map((s) => str(s, 100)).filter(Boolean));
+            const list = (v, max = 100) => v.map((x) => str(x, max)).filter(Boolean);
+            for (const k of ['owner_names', 'company_names', 'mail_senders']) if (Array.isArray(b[k])) setSetting(db, k, list(b[k]));
+            if (Array.isArray(b.pdf_passwords_add)) {
+              const cur = getSetting(db, 'pdf_passwords', []);
+              setSetting(db, 'pdf_passwords', [...new Set([...cur, ...list(b.pdf_passwords_add, 64)])]);
+            }
+            if (b.pdf_passwords_clear) setSetting(db, 'pdf_passwords', []);
             return send(200, { ok: true });
+          }
+          break;
+        }
+        case 'backups': {
+          if (m === 'GET' && !seg[1]) return send(200, { files: listBackups(), last: getSetting(db, 'job_backup') });
+          if (m === 'POST' && seg[1] === 'now') return send(200, makeBackup(db));
+          if (m === 'GET' && seg[1]) {
+            const file = backupPath(decodeURIComponent(seg[1]));
+            if (!file || !existsSync(file)) return send(404, { error: 'Backup não encontrado.' });
+            res.setHeader('Content-Type', 'application/octet-stream');
+            res.setHeader('Content-Disposition', `attachment; filename="${seg[1]}"`);
+            res.setHeader('Cache-Control', 'no-store');
+            createReadStream(file).pipe(res);
+            return undefined;
+          }
+          break;
+        }
+        case 'inbox': {
+          if (m === 'GET' && !seg[1]) {
+            const items = db.prepare(`SELECT id, sender, subject, received, filename, status, summary, created_at FROM inbox
+              ORDER BY status = 'novo' DESC, COALESCE(received, created_at) DESC LIMIT 40`).all()
+              .map((r) => ({ ...r, summary: r.summary ? JSON.parse(r.summary) : null }));
+            return send(200, { configured: mailConfigured(), status: getSetting(db, 'mail_status'), items });
+          }
+          if (!id) bad('Item inválido.');
+          const row = db.prepare('SELECT * FROM inbox WHERE id = ?').get(id);
+          if (!row) return send(404, { error: 'Não encontrado.' });
+          if (m === 'POST' && seg[2] === 'preview') {
+            const p = await preview(db, Buffer.from(row.data), row.filename);
+            return send(200, { ...p, inboxId: id });
+          }
+          if (m === 'POST' && seg[2] === 'discard') {
+            db.prepare("UPDATE inbox SET status = 'descartado' WHERE id = ?").run(id);
+            return send(200, { ok: true });
+          }
+          break;
+        }
+        case 'mail': {
+          if (m === 'POST' && seg[1] === 'check') {
+            if (!mailConfigured()) bad('Gmail não configurado. Veja o README (GMAIL_EMAIL e GMAIL_SENHA_APP no .env).');
+            try {
+              const r = await checkMail(db);
+              return send(200, { added: r.added.length });
+            } catch (e) { bad(e.message); }
+          }
+          break;
+        }
+        case 'push': {
+          if (!push) bad('Avisos indisponíveis.');
+          if (m === 'GET' && seg[1] === 'key') return send(200, { publicKey: push.publicKey, devices: push.count() });
+          if (m === 'POST' && seg[1] === 'subscribe') { const b = await json(); push.subscribe(b.subscription, b.device); return send(200, { ok: true, devices: push.count() }); }
+          if (m === 'POST' && seg[1] === 'unsubscribe') { const b = await json(); push.unsubscribe(String(b.endpoint || '')); return send(200, { ok: true, devices: push.count() }); }
+          if (m === 'POST' && seg[1] === 'test') {
+            const n = await push.notify({ title: 'Avisos ligados', body: 'É assim que os avisos de contas e extratos vão chegar.', url: '/#/', tag: 'teste' });
+            return send(200, { sent: n });
           }
           break;
         }
@@ -377,7 +452,7 @@ export function makeApi(db, auth) {
     } catch (e) {
       if (e instanceof HttpError) return send(e.status, { error: e.message });
       if (e instanceof SyntaxError) return send(400, { error: 'JSON inválido.' });
-      if (/Não |Este PDF|Formato|CSV|Escolha/.test(e.message)) return send(400, { error: e.message });
+      if (e.status === 400 || /Não |Este PDF|Formato|CSV|Escolha/.test(e.message)) return send(400, { error: e.message });
       console.error(e);
       return send(500, { error: 'Erro interno.' });
     }

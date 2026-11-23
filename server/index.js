@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { initAuth } from './auth.js';
 import { makeApi } from './api.js';
+import { initPush } from './push/index.js';
+import { initMail } from './mail/index.js';
+import { startJobs } from './jobs.js';
 
 const ROOT = fileURLToPath(new URL('../public/', import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
@@ -16,7 +19,10 @@ const DB_FILE = process.env.DB_FILE || fileURLToPath(new URL('../data/financas.d
 const db = openDb(DB_FILE);
 const auth = initAuth(db, process.env.FINANCAS_SENHA || '');
 if (!auth.configured) console.warn('FINANCAS_SENHA não definida: ninguém consegue entrar até ela ser configurada.');
-const api = makeApi(db, auth);
+initMail(db);
+const push = initPush(db);
+const api = makeApi(db, auth, { push });
+if (process.env.NODE_ENV !== 'test') startJobs(db, push);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
