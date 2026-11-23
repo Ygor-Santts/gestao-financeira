@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { initAuth } from './auth.js';
@@ -73,13 +74,17 @@ async function serveStatic(req, res, pathname) {
   if (!entry || process.env.NODE_ENV !== 'production') {
     const raw = await readFile(file);
     const type = TYPES[extname(file)] || 'application/octet-stream';
-    entry = { raw, gz: /text|json|svg|javascript|manifest/.test(type) ? gzipSync(raw) : null, type };
+    const etag = `"${createHash('sha1').update(raw).digest('base64url').slice(0, 16)}"`;
+    entry = { raw, gz: /text|json|svg|javascript|manifest/.test(type) ? gzipSync(raw) : null, type, etag };
     cache.set(file, entry);
   }
   res.setHeader('Content-Type', entry.type);
-  // index.html and the service worker must always be fresh so updates arrive.
-  const fresh = /index\.html$|sw\.js$|\.webmanifest$/.test(file);
-  res.setHeader('Cache-Control', fresh ? 'no-cache' : 'public, max-age=3600');
+  // Code and pages are always checked with the server (cheap thanks to the ETag),
+  // so an update shows up the next time the app opens. Only images are cached.
+  const isImage = /\.(png|ico|svg|woff2)$/.test(file);
+  res.setHeader('Cache-Control', isImage ? 'public, max-age=86400' : 'no-cache');
+  res.setHeader('ETag', entry.etag);
+  if (req.headers['if-none-match'] === entry.etag) { res.statusCode = 304; return res.end(); }
   if (entry.gz && /gzip/.test(req.headers['accept-encoding'] || '')) {
     res.setHeader('Content-Encoding', 'gzip');
     return res.end(entry.gz);

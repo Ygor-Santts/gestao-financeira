@@ -1,6 +1,6 @@
 // Service worker: keeps the app shell available offline and receives files
 // shared from other apps (Android share sheet → "Finanças").
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = [
   '/', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/app.js', '/js/api.js', '/js/util.js',
@@ -38,7 +38,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || url.pathname.startsWith('/api/')) return;
 
   // Network first so a new version shows up right away; cache when offline.
-  e.respondWith(fetch(e.request).then((res) => {
+  e.respondWith(fetch(e.request, { cache: 'no-cache' }).then((res) => {
     if (res.ok) {
       const copy = res.clone();
       caches.open(`shell-${VERSION}`).then((c) => c.put(e.request.mode === 'navigate' ? '/' : e.request, copy));
