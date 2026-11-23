@@ -69,6 +69,7 @@ export function fill(root, ...children) {
 }
 
 export function toast(msg, kind = '') {
+  document.querySelectorAll('.toast').forEach((old) => old.remove()); // one message at a time
   const t = h('div', { class: `toast ${kind}`, role: 'status' }, msg);
   document.body.append(t);
   requestAnimationFrame(() => t.classList.add('show'));
@@ -146,9 +147,14 @@ export const ICON = {
 };
 
 // Month switcher used at the top of several screens.
+// The month is shared by Início, Extrato and Contas; away from the current month a
+// "Voltar para hoje" shortcut shows up so it is clear you are looking at another month.
 export function monthSwitcher(month, onChange) {
-  return h('div', { class: 'month-switch' },
-    h('button', { class: 'icon-btn', 'aria-label': 'Mês anterior', onclick: () => onChange(addMonths(month, -1)), html: ICON.left }),
-    h('span', { class: 'month-label', 'aria-live': 'polite' }, monthLabel(month)),
-    h('button', { class: 'icon-btn', 'aria-label': 'Próximo mês', onclick: () => onChange(addMonths(month, 1)), html: ICON.right }));
+  const cur = thisMonth();
+  return h('div', { class: 'month-wrap' },
+    h('div', { class: 'month-switch' },
+      h('button', { class: 'icon-btn', 'aria-label': 'Mês anterior', onclick: () => onChange(addMonths(month, -1)), html: ICON.left }),
+      h('span', { class: 'month-label', 'aria-live': 'polite' }, monthLabel(month)),
+      h('button', { class: 'icon-btn', 'aria-label': 'Próximo mês', onclick: () => onChange(addMonths(month, 1)), html: ICON.right })),
+    month !== cur ? h('button', { class: 'today-chip', onclick: () => onChange(cur) }, month < cur ? 'Mês que já passou. Voltar para hoje' : 'Mês que ainda vai chegar. Voltar para hoje') : null);
 }

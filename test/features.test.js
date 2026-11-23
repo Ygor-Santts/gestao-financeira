@@ -105,3 +105,50 @@ test('the same bill is never matched twice', () => {
   const a = Number(ins.run().lastInsertRowid), b = Number(ins.run().lastInsertRowid);
   assert.equal(matchBills(db, [a, b]).length, 1);
 });
+
+import { syncBill, syncIncome } from '../server/features.js';
+
+test('Contas ↔ Extrato: received/paid adds a line, unmarking removes it, the bank line replaces it', () => {
+  const db = setup();
+  const inc = Number(db.prepare("INSERT INTO incomes (month, description, kind, amount, expected, received) VALUES ('2026-12', 'Salário PJ', 'Salário PJ', 8150, '2026-12-15', 0)").run().lastInsertRowid);
+  const get = () => db.prepare('SELECT * FROM incomes WHERE id = ?').get(inc);
+  const txs = () => db.prepare("SELECT date, amount, type, category, origin FROM transactions ORDER BY id").all().map((t) => ({ ...t }));
+
+  let before = get();
+  db.prepare('UPDATE incomes SET received = 1 WHERE id = ?').run(inc);
+  assert.equal(syncIncome(db, before, get()), 'lancado');
+  assert.deepEqual(txs(), [{ date: '2026-12-15', amount: 8150, type: 'entrada', category: 'Salário PJ', origin: 'previsto' }]);
+
+  before = get();
+  db.prepare('UPDATE incomes SET received = 0 WHERE id = ?').run(inc);
+  assert.equal(syncIncome(db, before, get()), 'removido');
+  assert.equal(txs().length, 0);
+
+  // Mark again, then import the bank statement: the bank line takes its place, still linked.
+  before = get();
+  db.prepare('UPDATE incomes SET received = 1 WHERE id = ?').run(inc);
+  syncIncome(db, before, get());
+  const r = commit(db, { kind: 'account', account: 'Nubank', format: 'ofx', items: [line('2026-12-12', 'Transferência recebida - EMPRESA', 8150, 'entrada', 'Salário PJ', { extId: 'b1' })] });
+  assert.equal(r.replaced, 1);
+  const all = txs();
+  assert.equal(all.length, 1);
+  assert.equal(all[0].origin, null);
+  assert.equal(get().received, 1);
+  assert.equal(db.prepare('SELECT ext_id FROM transactions WHERE id = ?').get(get().tx_id).ext_id, 'b1');
+
+  // A bill whose payment is already in the statement is linked, not added twice.
+  const bill = db.prepare("SELECT * FROM bills WHERE description = 'Contabilidade 2'").get();
+  db.prepare("INSERT INTO transactions (date, description, amount, type, category) VALUES ('2026-12-04', 'Pix contabilidade', -320, 'saida', 'Contabilidade')").run();
+  db.prepare('UPDATE bills SET paid = 1 WHERE id = ?').run(bill.id);
+  assert.equal(syncBill(db, bill, db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id)), 'ligado');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM transactions WHERE type = 'saida'").get().n, 1);
+  // Unmarking a bill linked to a real bank line keeps the bank line.
+  const b2 = db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id);
+  db.prepare('UPDATE bills SET paid = 0 WHERE id = ?').run(bill.id);
+  assert.equal(syncBill(db, b2, db.prepare('SELECT * FROM bills WHERE id = ?').get(bill.id)), 'desligado');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM transactions WHERE type = 'saida'").get().n, 1);
+
+  // Benefit card income never enters the account.
+  const va = db.prepare("INSERT INTO incomes (month, description, kind, amount, received) VALUES ('2026-12', 'Vale alimentação', 'Alimentação', 682, 1)").run();
+  assert.equal(syncIncome(db, { received: 0 }, db.prepare('SELECT * FROM incomes WHERE id = ?').get(va.lastInsertRowid)), null);
+});

@@ -56,8 +56,8 @@ export async function homeView(root, state, go) {
   const pend = o.bills.filter((b) => !b.paid);
 
   const toggleBill = async (b) => {
-    await api.put(`bills/${b.id}`, { paid: !b.paid });
-    toast(b.paid ? 'Conta marcada como não paga' : 'Conta marcada como paga', 'ok');
+    const r = await api.put(`bills/${b.id}`, { paid: !b.paid });
+    toast(r.extrato === 'ligado' ? 'Conta paga. O pagamento já estava no Extrato' : b.paid ? 'Conta desmarcada' : 'Conta paga e lançada no Extrato', 'ok');
     go();
   };
 
@@ -86,7 +86,7 @@ export async function homeView(root, state, go) {
         h('div', {}, h('dt', {}, 'Na conta no fim'), h('dd', { class: 'num have' }, money(o.previsao.fimDoMes)))),
       pend.length ? h('ul', { class: 'checklist' }, pend.slice(0, 5).map((b) => h('li', {},
         h('button', { class: 'check', 'aria-label': `Marcar ${b.description} como paga`, onclick: () => toggleBill(b) }),
-        h('button', { class: 'check-text', onclick: () => editBill(b, month, go) },
+        h('button', { class: 'check-text', onclick: () => editBill(b, month, () => go(), go) },
           h('span', {}, b.description), b.due ? h('small', {}, `vence ${b.due.slice(8, 10)}/${b.due.slice(5, 7)}`) : null),
         h('span', { class: 'num' }, money(b.amount))))) : h('p', { class: 'muted' }, 'Todas as contas do mês estão pagas.')) : null,
 

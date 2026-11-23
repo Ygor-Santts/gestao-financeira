@@ -5,7 +5,7 @@ import { parseCsv } from './importers/csv.js';
 import { pdfToText, parsePdfText } from './importers/pdf.js';
 import { buildHistory, classifyAccountLine, classifyCardLine } from './importers/classify.js';
 import { getSetting, setSetting, tx } from './db.js';
-import { matchBills, unlinkBills, applyGoal } from './features.js';
+import { matchBills, unlinkBills, applyGoal, replaceProvisional } from './features.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
@@ -90,7 +90,9 @@ export function markDuplicates(db, kind, account, items) {
   if (!account) { items.forEach((i) => { i.duplicate = false; }); return; }
   const dates = items.map((i) => i.date).sort();
   if (!dates.length) return;
-  const existing = db.prepare(`SELECT id, date, amount, ext_id FROM ${table} WHERE ${col} = ? AND date BETWEEN date(?, '-3 days') AND date(?, '+3 days')`)
+  // Lines typed in Contas ("previsto") are not duplicates: the bank line replaces them.
+  const notProvisional = kind === 'card' ? '' : "AND (origin IS NULL OR origin <> 'previsto')";
+  const existing = db.prepare(`SELECT id, date, amount, ext_id FROM ${table} WHERE ${col} = ? ${notProvisional} AND date BETWEEN date(?, '-3 days') AND date(?, '+3 days')`)
     .all(account, dates[0], dates[dates.length - 1]);
   const byExt = new Set(existing.filter((e) => e.ext_id).map((e) => e.ext_id));
   const used = new Set();
@@ -112,7 +114,7 @@ export function commit(db, body) {
     const imp = db.prepare('INSERT INTO imports (filename, source, kind, account, count) VALUES (?, ?, ?, ?, ?)')
       .run(filename || null, format || null, kind, account, items.length);
     const importId = Number(imp.lastInsertRowid);
-    let added = 0, skipped = 0, paidBills = [];
+    let added = 0, skipped = 0, paidBills = [], replaced = 0;
     const newIds = [];
     if (kind === 'card') {
       const ins = db.prepare('INSERT OR IGNORE INTO card_items (card, invoice, date, description, amount, category, ext_id, import_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
@@ -133,6 +135,7 @@ export function commit(db, body) {
           if (goal) applyGoal(db, { type: i.type, amount: round2(+i.amount), goal_id: goal });
         } else skipped++;
       }
+      replaced = replaceProvisional(db, newIds);
       paidBills = matchBills(db, newIds);
       if (balance && balance.amount != null) updateBalance(db, account, balance.amount, balance.date);
     }
@@ -143,7 +146,7 @@ export function commit(db, body) {
     }
     if (added) db.prepare('UPDATE imports SET count = ? WHERE id = ?').run(added, importId);
     else db.prepare('DELETE FROM imports WHERE id = ?').run(importId); // nothing new: keep the history clean
-    return { importId, added, skipped, paidBills };
+    return { importId, added, skipped, paidBills, replaced };
   });
 }
 

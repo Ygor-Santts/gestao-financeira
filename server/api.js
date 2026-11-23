@@ -5,7 +5,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { makeBackup, listBackups, backupPath } from './backup.js';
 import { checkMail, mailConfigured, DEFAULT_SENDERS } from './mail/index.js';
 import { now } from './clock.js';
-import { matchBills, unlinkBills, applyGoal, createMonth, futureInstallments, budgetStatus, irReport } from './features.js';
+import { matchBills, unlinkBills, applyGoal, createMonth, futureInstallments, budgetStatus, irReport, syncBill, syncIncome } from './features.js';
 
 const round2 = (n) => Math.round((n || 0) * 100) / 100;
 const MONTH = /^\d{4}-\d{2}$/;
@@ -106,6 +106,11 @@ const TABLES = {
 function crud(db, table, method, id, body, query) {
   const t = TABLES[table];
   if (method === 'GET') {
+    if ((table === 'bills' || table === 'incomes') && query.get('month')) {
+      // With the statement line each one is linked to (date, and whether it is the bank's own line)
+      return db.prepare(`SELECT x.*, tr.date AS tx_date, tr.origin AS tx_origin, tr.amount AS tx_amount
+        FROM ${table} x LEFT JOIN transactions tr ON tr.id = x.tx_id WHERE x.month = ? ORDER BY ${t.order.split(', ').map((c) => `x.${c.replace(/^(\w+)/, '$1')}`).join(', ')}`).all(query.get('month'));
+    }
     if (t.filter && query.get(t.filter)) {
       return db.prepare(`SELECT * FROM ${table} WHERE ${t.filter} = ? ORDER BY ${t.order}`).all(query.get(t.filter));
     }
@@ -151,13 +156,17 @@ function txValues(body, partial) {
 
 function listTransactions(db, q) {
   const where = [], args = [];
-  if (q.get('month')) { const [a, b] = monthRange(q.get('month')); where.push('date >= ? AND date < ?'); args.push(a, b); }
-  if (q.get('type')) { where.push('type = ?'); args.push(q.get('type')); }
-  if (q.get('category')) { where.push('category = ?'); args.push(q.get('category')); }
-  if (q.get('account')) { where.push('account = ?'); args.push(q.get('account')); }
-  if (q.get('q')) { where.push('(description LIKE ? OR note LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
+  if (q.get('month')) { const [a, b] = monthRange(q.get('month')); where.push('t.date >= ? AND t.date < ?'); args.push(a, b); }
+  if (q.get('type')) { where.push('t.type = ?'); args.push(q.get('type')); }
+  if (q.get('category')) { where.push('t.category = ?'); args.push(q.get('category')); }
+  if (q.get('account')) { where.push('t.account = ?'); args.push(q.get('account')); }
+  if (q.get('q')) { where.push('(t.description LIKE ? OR t.note LIKE ?)'); args.push(`%${q.get('q')}%`, `%${q.get('q')}%`); }
   const limit = Math.min(Number(q.get('limit')) || 500, 3000);
-  return db.prepare(`SELECT * FROM transactions ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY date DESC, id DESC LIMIT ${limit}`).all(...args);
+  // link_*: the bill or expected income (tela Contas) this line paid or received
+  return db.prepare(`SELECT t.*, b.id AS bill_id, b.description AS bill_desc, b.month AS bill_month,
+      i.id AS income_id, i.description AS income_desc, i.month AS income_month
+    FROM transactions t LEFT JOIN bills b ON b.tx_id = t.id LEFT JOIN incomes i ON i.tx_id = t.id
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY t.date DESC, t.id DESC LIMIT ${limit}`).all(...args);
 }
 
 // ---------- cards ----------
@@ -309,7 +318,7 @@ export function makeApi(db, auth, { push } = {}) {
             tx(db, () => {
               const t = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
               applyGoal(db, t, -1);
-              unlinkBills(db, [id]);
+              unlinkBills(db, [id]); // its bill/income goes back to unpaid/not received
               db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
             });
             return send(200, { ok: true });
@@ -348,7 +357,14 @@ export function makeApi(db, auth, { push } = {}) {
             return send(200, nextMonth(db, b.from, b.to));
           }
           if ((m === 'PUT' || m === 'DELETE') && !id) bad('Item inválido.');
-          return send(200, crud(db, seg[0], m, id, m === 'GET' || m === 'DELETE' ? {} : await json(), q));
+          // Bills and incomes keep the statement in step: paid/received ⇒ a line in Extrato.
+          const sync = { bills: syncBill, incomes: syncIncome }[seg[0]];
+          if (!sync || m === 'GET') return send(200, crud(db, seg[0], m, id, m === 'GET' || m === 'DELETE' ? {} : await json(), q));
+          const before = id ? db.prepare(`SELECT * FROM ${seg[0]} WHERE id = ?`).get(id) : null;
+          const out = crud(db, seg[0], m, id, m === 'DELETE' ? {} : await json(), q);
+          const after = m === 'DELETE' ? null : db.prepare(`SELECT * FROM ${seg[0]} WHERE id = ?`).get(out.id);
+          const extrato = sync(db, before, after);
+          return send(200, { ...(after ? db.prepare(`SELECT * FROM ${seg[0]} WHERE id = ?`).get(out.id) : out), extrato });
         }
         case 'categories': {
           if (m === 'POST') {

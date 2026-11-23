@@ -99,6 +99,10 @@ function migrate(db) {
   if (!cols('bills').includes('tx_id')) db.exec('ALTER TABLE bills ADD COLUMN tx_id INTEGER');
   if (!cols('transactions').includes('goal_id')) db.exec('ALTER TABLE transactions ADD COLUMN goal_id INTEGER');
   db.exec('CREATE TABLE IF NOT EXISTS budgets (category TEXT PRIMARY KEY, monthly REAL NOT NULL)');
+  if (!cols('incomes').includes('tx_id')) db.exec('ALTER TABLE incomes ADD COLUMN tx_id INTEGER');
+  // 'previsto' = created by marking a bill as paid or an income as received in Contas;
+  // replaced by the bank's own line when the statement is imported.
+  if (!cols('transactions').includes('origin')) db.exec('ALTER TABLE transactions ADD COLUMN origin TEXT');
 }
 
 export function getSetting(db, key, fallback = null) {

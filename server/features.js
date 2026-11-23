@@ -1,6 +1,7 @@
 // Automations on top of the data: bills paid by the statement, card installments still
 // to come, category limits, caixinhas moved by the statement and the income tax summary.
-import { tx } from './db.js';
+import { tx, getSetting } from './db.js';
+import { now } from './clock.js';
 
 const round2 = (n) => Math.round((n || 0) * 100) / 100;
 const addMonth = (ym, n = 1) => {
@@ -53,10 +54,119 @@ export function matchBills(db, txIds) {
   return paid;
 }
 
-// When a payment is deleted (or its import undone) its bill goes back to unpaid.
+// When a payment is deleted (or its import undone) its bill goes back to unpaid,
+// and an income goes back to "not received".
 export function unlinkBills(db, txIds) {
   if (!txIds.length) return;
-  db.prepare(`UPDATE bills SET paid = 0, tx_id = NULL WHERE tx_id IN (${txIds.map(() => '?').join(',')})`).run(...txIds);
+  const q = txIds.map(() => '?').join(',');
+  db.prepare(`UPDATE bills SET paid = 0, tx_id = NULL WHERE tx_id IN (${q})`).run(...txIds);
+  db.prepare(`UPDATE incomes SET received = 0, tx_id = NULL WHERE tx_id IN (${q})`).run(...txIds);
+}
+
+// ---------- Contas ↔ Extrato ----------
+// Marking a bill as paid (or an income as received) puts it in the statement. If the
+// statement already has that money, it is linked instead of added twice.
+const BILL_CAT = { Cartão: 'Cartões de crédito', Apartamento: 'Moradia', Contabilidade: 'Contabilidade', Família: 'Família', Pai: 'Família', Educação: 'Educação', 'Gastos extras': 'Compras', 'Contas fixas': 'Outros gastos' };
+const INCOME_CAT = { 'Salário PJ': 'Salário PJ', 'Salário CLT': 'Salário CLT' };
+
+function dateFor(month, ref) {
+  const today = now().date;
+  if (today.startsWith(month)) return ref && ref.startsWith(month) && ref <= today ? ref : today;
+  if (ref && ref.startsWith(month)) return ref;
+  const last = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5, 7), 0)).getUTCDate();
+  return month < today.slice(0, 7) ? `${month}-${last}` : `${month}-01`;
+}
+
+function findExisting(db, { type, value, month, bank, linkedCol }) {
+  const sign = type === 'entrada' ? 1 : -1;
+  const rows = db.prepare(`SELECT * FROM transactions WHERE type = ? AND date BETWEEN date(?, '-10 days') AND date(?, '+10 days')
+      AND id NOT IN (SELECT tx_id FROM bills WHERE tx_id IS NOT NULL) AND id NOT IN (SELECT tx_id FROM incomes WHERE tx_id IS NOT NULL)
+      ORDER BY date`).all(type, `${month}-01`, `${month}-28`);
+  return rows.find((t) => Math.abs(t.amount - sign * value) <= 0.05)
+    || (bank && rows.find((t) => t.category === 'Cartões de crédito' && (bankOf(t.description) || (/pagamento de fatura/.test(norm(t.description)) ? t.account : null)) === bank))
+    || null;
+}
+
+function addProvisional(db, { date, description, amount, type, category }) {
+  const r = db.prepare("INSERT INTO transactions (date, description, amount, type, category, account, origin, note) VALUES (?, ?, ?, ?, ?, ?, 'previsto', ?)")
+    .run(date, description, round2(amount), type, category, getSetting(db, 'conta_padrao', 'Nubank'), 'Lançado pela tela Contas; troca sozinho pelo lançamento do banco quando você importar o extrato.');
+  return Number(r.lastInsertRowid);
+}
+
+function dropLinked(db, txId) {
+  if (!txId) return null;
+  const t = db.prepare('SELECT origin FROM transactions WHERE id = ?').get(txId);
+  if (t?.origin === 'previsto') { db.prepare('DELETE FROM transactions WHERE id = ?').run(txId); return 'removido'; }
+  return 'desligado';
+}
+
+// before/after: the bill row before and after the change. Returns what happened in the statement.
+export function syncBill(db, before, after) {
+  return tx(db, () => {
+    if (!after) return dropLinked(db, before?.tx_id); // bill deleted
+    if (after.paid && !before?.paid) {
+      if (after.tx_id) return null;
+      const bank = after.category === 'Cartão' ? bankOf(after.description) : null;
+      const found = findExisting(db, { type: 'saida', value: after.amount, month: after.month, bank });
+      const id = found ? found.id : addProvisional(db, {
+        date: dateFor(after.month, after.due), description: after.description, amount: -after.amount, type: 'saida', category: BILL_CAT[after.category] || 'Outros gastos',
+      });
+      db.prepare('UPDATE bills SET tx_id = ? WHERE id = ?').run(id, after.id);
+      return found ? 'ligado' : 'lancado';
+    }
+    if (!after.paid && before?.paid) {
+      const r = dropLinked(db, after.tx_id);
+      db.prepare('UPDATE bills SET tx_id = NULL WHERE id = ?').run(after.id);
+      return r;
+    }
+    if (after.paid && after.tx_id) {
+      // Keep a provisional line in step with the bill's value and name.
+      db.prepare("UPDATE transactions SET amount = ?, description = ? WHERE id = ? AND origin = 'previsto'").run(-round2(after.amount), after.description, after.tx_id);
+    }
+    return null;
+  });
+}
+
+export function syncIncome(db, before, after) {
+  return tx(db, () => {
+    if (!after) return dropLinked(db, before?.tx_id);
+    if (/alimenta/i.test(after.kind || '')) return null; // benefit card: never enters the account
+    if (after.received && !before?.received) {
+      if (after.tx_id || !after.amount) return null;
+      const found = findExisting(db, { type: 'entrada', value: after.amount, month: after.month });
+      const id = found ? found.id : addProvisional(db, {
+        date: dateFor(after.month, after.expected), description: after.description, amount: after.amount, type: 'entrada', category: INCOME_CAT[after.kind] || 'Outros recebimentos',
+      });
+      db.prepare('UPDATE incomes SET tx_id = ? WHERE id = ?').run(id, after.id);
+      return found ? 'ligado' : 'lancado';
+    }
+    if (!after.received && before?.received) {
+      const r = dropLinked(db, after.tx_id);
+      db.prepare('UPDATE incomes SET tx_id = NULL WHERE id = ?').run(after.id);
+      return r;
+    }
+    if (after.received && after.tx_id) {
+      db.prepare("UPDATE transactions SET amount = ?, description = ? WHERE id = ? AND origin = 'previsto'").run(round2(after.amount), after.description, after.tx_id);
+    }
+    return null;
+  });
+}
+
+// Imported bank lines take the place of provisional ones with the same value (±12 days).
+export function replaceProvisional(db, txIds) {
+  let replaced = 0;
+  for (const id of txIds) {
+    const t = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+    if (!t) continue;
+    const p = db.prepare(`SELECT * FROM transactions WHERE origin = 'previsto' AND type = ? AND abs(amount - ?) <= 0.05
+      AND date BETWEEN date(?, '-12 days') AND date(?, '+12 days') ORDER BY abs(julianday(date) - julianday(?)) LIMIT 1`).get(t.type, t.amount, t.date, t.date, t.date);
+    if (!p) continue;
+    db.prepare('UPDATE bills SET tx_id = ? WHERE tx_id = ?').run(id, p.id);
+    db.prepare('UPDATE incomes SET tx_id = ? WHERE tx_id = ?').run(id, p.id);
+    db.prepare('DELETE FROM transactions WHERE id = ?').run(p.id);
+    replaced++;
+  }
+  return replaced;
 }
 
 // Bills for a new month from the previous one. One-off "Gastos extras" are not repeated;

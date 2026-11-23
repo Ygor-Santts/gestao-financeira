@@ -81,7 +81,13 @@ export async function editTransaction(t, onSaved) {
     ? h('p', { class: 'field-hint' }, t.amount > 0 ? 'Este valor entrou na conta (veio da caixinha ou de outra conta sua).' : 'Este valor saiu da conta (foi para a caixinha ou outra conta sua).')
     : null;
 
+  const link = t && (t.bill_desc || t.income_desc)
+    ? h('p', { class: 'link-note' }, t.bill_desc
+      ? `Este lançamento pagou a conta "${t.bill_desc}" da tela Contas. Excluir aqui deixa a conta em aberto de novo.`
+      : `Esta é a entrada prevista "${t.income_desc}" da tela Contas. Excluir aqui deixa ela como não recebida.`)
+    : null;
   const s = sheet(t ? 'Editar lançamento' : 'Novo lançamento', h('form', { onsubmit: save, class: 'form' },
+    link,
     seg,
     h('div', { class: 'amount-field' }, h('span', {}, 'R$'), amount),
     flip,
@@ -127,6 +133,7 @@ export async function extratoView(root, state, go) {
 
   fill(root, 
     h('header', { class: 'top' }, h('h1', { class: 'sr-only' }, 'Extrato'), monthSwitcher(month, (m) => go({ month: m }))),
+    h('p', { class: 'plan-intro' }, 'O que entrou e saiu de verdade nas suas contas. Contas e entradas previstas ficam na aba Contas.'),
     h('div', { class: 'search' }, h('span', { html: ICON.search }), searchInput),
     h('div', { class: 'chips', role: 'tablist', 'aria-label': 'Filtrar por tipo' },
       FILTERS.map(([k, l]) => h('button', { role: 'tab', 'aria-selected': String(k === type), class: `chip ${k ? TYPE[k].cls : ''}`, onclick: () => setQuery('type', k) }, l)),
@@ -138,11 +145,14 @@ export async function extratoView(root, state, go) {
     rows.length ? h('div', { class: 'tx-list' }, [...groups].map(([d, items]) => h('section', { class: 'day' },
       h('h3', { class: 'day-head' }, dayLabel(d)),
       h('ul', {}, items.map((r) => h('li', {},
-        h('button', { class: `tx ${TYPE[r.type].cls}`, onclick: () => editTransaction(r, () => go()) },
+        h('button', { class: `tx ${TYPE[r.type].cls} ${r.origin === 'previsto' ? 'provisional' : ''}`, onclick: () => editTransaction(r, () => go()) },
           h('span', { class: 'tx-mark', 'aria-hidden': 'true' }),
           h('span', { class: 'tx-main' },
             h('span', { class: 'tx-desc' }, r.description),
-            h('span', { class: 'tx-sub' }, h('span', { class: r.category === 'A confirmar' ? 'warn' : '' }, r.category), h('span', {}, r.account))),
+            h('span', { class: 'tx-sub' }, h('span', { class: r.category === 'A confirmar' ? 'warn' : '' }, r.category), h('span', {}, r.account)),
+            r.origin === 'previsto'
+              ? h('span', { class: 'tx-flag' }, 'Marcado em Contas, aguardando o extrato do banco')
+              : r.bill_desc || r.income_desc ? h('span', { class: 'tx-link' }, r.bill_desc ? `Pagou a conta "${r.bill_desc}"` : `Era a entrada prevista "${r.income_desc}"`) : null),
           h('span', { class: 'tx-amt num' }, signed(r.amount), h('small', {}, TYPE[r.type].verb)))))))))
       : h('div', { class: 'empty' },
         h('p', {}, search || type || cat ? 'Nenhum lançamento com esse filtro.' : 'Nenhum lançamento neste mês.'),
